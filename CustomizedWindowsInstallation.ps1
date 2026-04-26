@@ -91,6 +91,9 @@ param(
     [switch]$Help
 )
 
+# git hash
+$GitHash = "0a43951"
+
 # ==============================
 # Apply defaults AFTER param()
 # ==============================
