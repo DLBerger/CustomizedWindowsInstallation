@@ -5,7 +5,7 @@ To use this with local git commits you need to put the following
 in .git/hook/post-commit:
 
 #!/bin/sh
-powershell -ExecutionPolicy Bypass -File scripts/update-git-hash-local.ps1
+powershell -ExecutionPolicy Bypass -File .git-scripts/update-git-hash-local.ps1
 
 #>
 

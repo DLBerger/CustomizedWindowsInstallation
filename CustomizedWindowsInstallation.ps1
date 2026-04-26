@@ -1,163 +1,592 @@
 <#
 .SYNOPSIS
-Creates a bundled Windows installation ISO by extracting an input ISO, optionally rebuilding install.wim from selected editions, refreshing the media with Dynamic Update packages (LCU, Setup DU, SafeOS DU, and related prerequisites), and generating a new bootable ISO.
+Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media.
 
 .DESCRIPTION
-This script operates on a folder that contains a single Windows ISO (excluding *.bundled.iso). It extracts the ISO into a stable work directory, stages the installation media tree, optionally rebuilds ISO\sources\install.wim from selected WIM indices, refreshes the media using Dynamic Update packages, and builds a new bootable ISO.
+This script prepares a directory structure that can be copied to the root of a USB drive
+containing official Windows installation media (Windows 10 22H2+ or Windows 11 25H2+).
 
-Dynamic Update (DU) alignment goal:
-- Windows Setup normally contacts Microsoft endpoints early in a feature update or media-based install to acquire Dynamic Update packages, then applies those updates to installation media. These packages can include updates to Setup binaries, SafeOS/WinRE, servicing stack requirements, the latest cumulative update (LCU), and applicable drivers intended for DU.
-- In environments where devices should not (or cannot) download these during setup, DU packages can be acquired from Microsoft Update Catalog and applied to the image prior to running Setup.
-- This script aims to pre-stage those DU packages into the media so the resulting ISO behaves like a current, self-contained installation source with minimal additional downloads at install/upgrade time.
-
-DU package acquisition:
-- If DU-related MSU packages are missing (or if -UpdateMSUs is specified), the script uses MSCatalogLTS to search the Microsoft Update Catalog and download the appropriate packages into a `msus\<category>` directory tree located in the same folder as the source ISO. MSCatalogLTS provides commands for searching and downloading updates from the Microsoft Update Catalog.
-- The downloaded packages are saved in `<isoDir>\msus\<category>\` (e.g., msus\SSU\,msus\LCU\, msus\SafeOS\, msus\SetupDU\) so they are reusable across runs and can be applied to the staged media.
-- For LCUs: if multiple cumulative updates are found for the detected build, all are downloaded (in oldest-to-newest order) to support checkpoint cumulative update chains; otherwise just the latest is used.
--           if the OnlyLatestLCU option is given, only the latest applicable LCU is downloaded and applied, without checkpoint updates.
-- For Setup DU, SafeOS DU, and SSU: the latest applicable package is selected, preferring the same month as the latest LCU.
-
-DU package application targets:
-Properly updating installation media involves operating on multiple target images. Microsoft identifies the primary targets as:
-- WinPE (boot.wim): used to install/deploy/repair Windows.
-- WinRE (winre.wim): recovery environment used for offline repair; based on WinPE.
-- Windows OS image(s) (install.wim): one or more Windows editions stored in \sources\install.wim.
-- The full media tree: Setup.exe and supporting media files.
-
-This script refreshes the media by applying the DU package types Microsoft documents for Windows installation media:
-- Latest Cumulative Update (LCU) (and prerequisites/checkpoints when applicable).
-- Setup Dynamic Update (Setup DU): updates setup binaries/files used for feature updates and installs.
-- Safe OS Dynamic Update (SafeOS DU): updates the safe operating system used for the recovery environment (WinRE).
-- Servicing stack requirements: modern LCUs often embed the servicing stack; separate servicing stack packages may exist only when required.
-
-Checkpoint cumulative updates:
-- When the catalog search for the detected build number returns multiple LCU entries, all are downloaded in oldest-to-newest order to ensure the full checkpoint chain is available. The existing KB-ordered application logic applies them in the correct sequence.
-- When acquiring DU packages, Microsoft guidance also recommends ensuring DU packages correspond to the same month as the latest cumulative update; if a DU package is not available for that month, use the most recently published version.
-
-Drivers on media:
-- The script creates a special folder at the root of the staged ISO named "$WinpeDriver$". Windows Setup can scan this folder for driver INF files during installation.
-- Place INF-based drivers (subfolders allowed) under \$WinpeDriver$ in the final media.
-
-SetupConfig + convenience launchers + driver installer:
-- The script writes two SetupConfig files into the ISO root:
-  - SetupConfig-Upgrade.ini (for in-place upgrades)
-  - SetupConfig-Clean.ini (for clean installs)
-- The script writes three launcher batch files into the ISO root:
-  - Upgrade.cmd: runs setup.exe /auto upgrade and passes SetupConfig-Upgrade.ini via /ConfigFile
-  - Clean install.cmd: runs setup.exe /auto clean and passes SetupConfig-Clean.ini via /ConfigFile
-  - Install Drivers.cmd: installs drivers from $WinpeDriver$ (if present) using pnputil; intended to be run after the initial installation has completed
-- SetupConfig is applied only when setup.exe is launched with /ConfigFile <path>. Microsoft documents that when running setup from media/ISO, you must include /ConfigFile to use SetupConfig.ini.
-- /Auto {Clean | Upgrade} controls the automated setup mode.
-
-Index selection:
-- If no selection is provided, behavior depends on -UpdateISO:
-  - Without -UpdateISO: defaults to ALL indices.
-  - With -UpdateISO: defaults to EMPTY selection unless indices are explicitly specified.
-- Explicit selection can be made using:
-  - -Home, -Pro
-  - -Indices with numbers, ranges, labels, wildcard labels (* and ?), or regex labels (re:<pattern>).
-
-UpdateISO behavior:
-- -UpdateISO reuses an existing work folder from a prior run.
-- If -UpdateISO is specified and NO explicit index selection is provided (-Home/-Pro/-Indices):
-  - The script does not rebuild ISO\sources\install.wim
-  - The script does not service/refresh the images
-  - The script does not apply DU/MSU packages
-- To force rebuild (and subsequent servicing/refresh), explicitly specify indices (for example: -Pro or -Indices 6,8,10).
-
-UpdateMSUs behavior:
-- -UpdateMSUs forces the DU/MSU download logic via MSCatalogLTS, even if MSU files already exist in the msus subdirectory.
-- Without -UpdateMSUs, download occurs only when DU/MSU packages are missing (none present in the msus subdirectory alongside the ISO).
-
-MSU directory layout:
-- MSU/CAB packages are downloaded into <isoDir>\msus\<category>\ subdirectories.
-- Category subdirectories: SSU, LCU, SafeOS, SetupDU.
-- Application targets per category:
-  - install.wim (each index): SSU (prerequisites) -> LCU (checkpoint chain)
-  - winre.wim (inside install.wim): SafeOS
-  - boot.wim (all WinPE indices): SafeOS
-  - root of ISO: SetupDU
-
-DryRun behavior:
-- With -DryRun, the script completes PREP actions needed to stage the work tree and then prints what would happen for post-PREP actions.
-
-References:
-[1] https://learn.microsoft.com/en-us/windows/deployment/update/media-dynamic-update
-[2] https://github.com/Marco-online/MSCatalogLTS
-[3] https://www.deploymentresearch.com/removing-applications-from-your-windows-11-image-before-and-during-deployment/
-[4] https://thedotsource.com/2021/03/16/building-iso-files-with-powershell-7/
-[5] https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-pnpcustomizationswinpe-driverpaths
-[6] https://community.spiceworks.com/t/autounattend-xml-driver-path-issue-for-windows-11-24h2-and-25h2/1244985
-[7] https://github.com/wikijm/PowerShell-AdminScripts/blob/master/Miscellaneous/New-IsoFile.ps1
-[8] https://www.winhelponline.com/blog/servicing-stack-diagnosis-dism-sfc/
+It supports:
+- Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog.
+- Exporting all third-party drivers from the current system into $WinpeDriver$.
+- Exporting registry keys into .reg files.
+- Generating:
+    - Install Drivers.cmd
+    - SetupComplete.cmd
+    - SetupConfig-Clean.ini
+    - SetupConfig-Upgrade.ini
+- Dry-run mode (no changes made)
+- Refresh mode (re-download updates even if present)
+- Clean mode (remove generated content)
 
 .PARAMETER Folder
-Optional. Folder to process. If omitted, the current directory is used.
+Root folder where the update/driver/registry/scripts structure will be created.
+If omitted, defaults to the current working directory.
 
-.PARAMETER Debug
-Optional. Enable debugging output and passed to any tools executed.
-
-.PARAMETER Verbose
-Optional. Enable verbose output and passed to any tools executed.
-
-.PARAMETER OS
-Optional. 11 is the default. 10 or 11.
+.PARAMETER WinOS
+Windows major version: '10' or '11'.
+Alias: -OS
+If omitted, defaults to '11'.
 
 .PARAMETER Version
-Optional. OS dependent. Defaults are 22H2 for 10 and 25H2 for 11.
+Windows feature update version (for example: '22H2', '25H2').
+If omitted:
+- Windows 10 -> '22H2'
+- Windows 11 -> '25H2'
 
 .PARAMETER Arch
-Optional. OS dependent. Default is x64, but 11 supports x64 or arm64.
+CPU architecture: 'x64' or 'arm64'.
+If omitted, defaults to 'x64'.
 
 .PARAMETER All
-Optional. Default if others are not specifically given. Performs all actions.
+Enables all work modes (KB, Drivers, Reg).
 
 .PARAMETER KB
-Optional. Downloads all MS Catalog updates to the specified (OS Version Arch).
+Download OS and .NET updates.
 
 .PARAMETER Drivers
-Optional. Uses DISM to export all the current system drivers and later injected as required during the installation.
+Export drivers into $WinpeDriver$.
 
 .PARAMETER Reg
-Optional. Capture specific registry keys from the current system to be applied during the installation.
+Export registry keys.
 
 .PARAMETER Clean
--All is the default, otherwise cleans all generated output for the option(s)
+Remove generated content instead of creating it.
 
-.EXAMPLE
-PS> .\CustomizedWindowsInstallation.ps1
-Generates a customize set for files and folders for Windows 11 25H2 x64 with all the required KBs as well as the drivers and specific registry settings from the current system.
+.PARAMETER DryRun
+Show actions without performing them.
 
-.EXAMPLE
-PS> .\CustomizedWindowsInstallation.ps1 -KB
-Generates or updates folders for Windows 11 25H2 x64 with all the required KBs.
+.PARAMETER Refresh
+Re-download updates even if files already exist.
 
-.EXAMPLE
-PS> .\CustomizedWindowsInstallation.ps1 D:\temp -Clean
-Completely removes all generated files and folders from D:\temp.
-
-PS> .\CustomizedWindowsInstallation.ps1 -Clean -KB
-Completely removes all KB-related files and folders from the current directory.
+.PARAMETER Help
+Displays help and exits.
 
 .NOTES
-- Dynamic Update packages can be acquired from Microsoft Update Catalog and applied to installation media prior to running Setup.
-- Microsoft documents the DU package categories (LCU, Setup DU, SafeOS DU, servicing stack requirements) and the image targets involved in updating installation media (WinRE, OS image, WinPE, and the media tree).
-- Starting with Windows 11, version 24H2, checkpoint cumulative updates might be required as prerequisites for the latest LCU.
-- The "$WinpeDriver$" folder at the root of installation media can be used to provide drivers that Setup scans during installation.
+- Fully compatible with Windows PowerShell 5.x.
 #>
 
-# ==============================
-$script:Name = "CustomizedWindowsInstallation.ps1"
-# ==============================
+param(
+    [Parameter(Position = 0)]
+    [string]$Folder,
+
+    [Alias('OS')]
+    [ValidateSet('10','11')]
+    [string]$WinOS,
+
+    [string]$Version,
+
+    [ValidateSet('x64','arm64')]
+    [string]$Arch,
+
+    [switch]$All,
+    [switch]$KB,
+    [switch]$Drivers,
+    [switch]$Reg,
+    [switch]$Clean,
+
+    [switch]$DryRun,
+    [switch]$Refresh,
+
+    [switch]$Help
+)
 
 # ==============================
-# git information
+# Apply defaults AFTER param()
 # ==============================
-$GitHash = "9aac552"
+
+if ($Help) {
+    Get-Help -Full $PSCommandPath
+    exit
+}
+
+# If -Debug was passed, force debug output to auto-continue
+if ($PSBoundParameters.ContainsKey('Debug')) {
+    $DebugPreference = 'Continue'
+    Write-Debug "Debug mode enabled: DebugPreference set to 'Continue'"
+}
+
+if (-not $Folder) { $Folder = (Get-Location).ProviderPath }
+if (-not $WinOS) { $WinOS = '11' }
+if (-not $Arch)  { $Arch  = 'x64' }
+
+if (-not $Version) {
+    if ($WinOS -eq '10') { $Version = '22H2' }
+    else                 { $Version = '25H2' }
+}
+
+# --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
+# --- HtmlAgilityPack bootstrap (local temp folder + cleanup) -----------------
+$hapDll = Join-Path $PSScriptRoot "HtmlAgilityPack.dll"
+
+if (-not (Test-Path $hapDll)) {
+    Write-Host "HtmlAgilityPack.dll not found; downloading..." -ForegroundColor Cyan
+
+    $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
+    $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
+    $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
+
+    # Clean old extraction folder if it exists
+    if (Test-Path $extractDir) {
+        Remove-Item $extractDir -Recurse -Force
+    }
+
+    # --- Download using .NET WebClient (PS 5.x safe) ---
+    Write-Verbose "[HAP] Downloading via WebClient..."
+    $wc = New-Object System.Net.WebClient
+    $wc.DownloadFile($nugetUrl, $tmpNupkg)
+
+    # --- Extract using .NET ZipFile (PS 5.x safe) ---
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
+
+    # Prefer netstandard2.0, fallback to net45
+    $candidatePaths = @(
+        (Join-Path $extractDir "lib\netstandard2.0\HtmlAgilityPack.dll"),
+        (Join-Path $extractDir "lib\net45\HtmlAgilityPack.dll")
+    )
+
+    $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $sourceDll) {
+        throw "HtmlAgilityPack.dll not found inside NuGet package."
+    }
+
+    Copy-Item -Path $sourceDll -Destination $hapDll -Force
+    Write-Verbose "[HAP] HtmlAgilityPack.dll copied to: $hapDll"
+
+    # Cleanup: remove extraction folder + nupkg
+    Remove-Item $extractDir -Recurse -Force
+    Remove-Item $tmpNupkg -Force
+}
+
+# --- Load the DLL (PS 5.x safe) ---
+$hapLoaded = $false
+try {
+    [void][HtmlAgilityPack.HtmlDocument]
+    $hapLoaded = $true
+} catch {}
+
+if (-not $hapLoaded) {
+    Write-Verbose "[HAP] Loading HtmlAgilityPack from: $hapDll"
+    Add-Type -Path $hapDll
+    Write-Debug "[HAP] HtmlAgilityPack successfully loaded."
+}
+# ---------------------------------------------------------------------------
 
 # ==============================
-# Script identity
+# Helper: Write-Log
 # ==============================
-$script:ScriptPath = $PSCommandPath
-if (-not $script:ScriptPath) { $script:ScriptPath = $MyInvocation.MyCommand.Path }
+function Write-Log {
+    param([string]$Message, [string]$Level = 'INFO')
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Write-Host "[$ts] [$Level] $Message"
+}
 
+# ==============================
+# Resolve working folder
+# ==============================
+$Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
+Write-Verbose "Resolved working folder: $Folder"
+
+# ==============================
+# Determine work modes
+# ==============================
+$workSwitches = @()
+if ($All)     { $workSwitches += 'All' }
+if ($KB)      { $workSwitches += 'KB' }
+if ($Drivers) { $workSwitches += 'Drivers' }
+if ($Reg)     { $workSwitches += 'Reg' }
+
+if (-not $workSwitches) {
+    $All = $true
+    $KB = $true
+    $Drivers = $true
+    $Reg = $true
+    Write-Verbose "Defaulting to -All"
+}
+
+Write-Log "Target profile: Windows $WinOS $Version $Arch"
+Write-Log "Root folder   : $Folder"
+Write-Log "Mode          : $($workSwitches -join ', ')"
+if ($Clean)  { Write-Log "Clean mode    : Enabled" "WARN" }
+if ($DryRun) { Write-Log "Dry-run mode  : Enabled" "WARN" }
+if ($Refresh){ Write-Log "Refresh mode  : Enabled" }
+
+# ==============================
+# Core paths
+# ==============================
+$paths = [ordered]@{
+    UpdatesRoot     = Join-Path $Folder 'Updates'
+    UpdatesOSCU     = Join-Path $Folder 'Updates\OSCU'
+    UpdatesNET      = Join-Path $Folder 'Updates\NET'
+    WinpeDriverRoot = Join-Path $Folder '$WinpeDriver$'
+    RegistryRoot    = Join-Path $Folder 'Registry'
+    ScriptsRoot     = Join-Path $Folder 'Scripts'
+}
+
+if (-not $Clean -and -not $DryRun) {
+    foreach ($p in $paths.Values) {
+        if (-not (Test-Path $p)) {
+            Write-Verbose "Creating folder: $p"
+            New-Item -ItemType Directory -Path $p -Force | Out-Null
+        }
+    }
+}
+
+# =========================
+# HTML-based Update Catalog search
+# =========================
+
+function Invoke-CatalogRequest {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri
+    )
+
+    Write-Verbose "[CatalogRequest] GET $Uri"
+
+    try {
+        $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        $Headers = @{
+            "Cache-Control" = "no-cache"
+            "Pragma"        = "no-cache"
+            "User-Agent"    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+
+        $Params = @{
+            Uri             = $Uri
+            Headers         = $Headers
+            UseBasicParsing = $true
+            ErrorAction     = "Stop"
+        }
+
+        $Response = Invoke-WebRequest @Params
+
+        Write-Debug "[CatalogRequest] RawContent length = $($Response.RawContent.Length)"
+
+        $HtmlDoc = [HtmlAgilityPack.HtmlDocument]::new()
+        $HtmlDoc.LoadHtml($Response.RawContent.ToString())
+
+        return $HtmlDoc
+    }
+    catch {
+        Write-Warning "[CatalogRequest] Failed: $_"
+        return $null
+    }
+    finally {
+        [Net.ServicePointManager]::SecurityProtocol = $oldProtocol
+    }
+}
+function Parse-CatalogSearchResults {
+    param(
+        [Parameter(Mandatory)]
+        [HtmlAgilityPack.HtmlDocument]$Html
+    )
+
+    Write-Verbose "[CatalogParse] Extracting update IDs from HTML"
+
+    $ids = @()
+
+    # Look for goToDetails('GUID')
+    $pattern = "goToDetails\('([0-9a-fA-F-]{36})'\)"
+
+    $matches = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
+
+    foreach ($m in $matches) {
+        $id = $m.Groups[1].Value
+        Write-Debug "[CatalogParse] Found update ID: $id"
+        $ids += $id
+    }
+
+    Write-Verbose "[CatalogParse] Total IDs extracted: $($ids.Count)"
+    return $ids
+}
+function Search-UpdateCatalogHtml {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Query
+    )
+
+    Write-Verbose "[CatalogSearch] Searching Update Catalog (HTML mode)"
+    Write-Verbose "[CatalogSearch] Query: $Query"
+
+    $Encoded = [uri]::EscapeDataString($Query)
+    $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
+
+    Write-Debug "[CatalogSearch] Encoded URI: $Uri"
+
+    $Html = Invoke-CatalogRequest -Uri $Uri
+    if (-not $Html) {
+        Write-Warning "[CatalogSearch] No HTML returned"
+        return @()
+    }
+
+    return Parse-CatalogSearchResults -Html $Html
+}
+
+# ==============================
+# Download helper
+# ==============================
+function Download-MUFile {
+    param(
+        [string]$Url,
+        [string]$DestinationFolder,
+        [switch]$Force
+    )
+
+    $fileName = Split-Path -Path $Url -Leaf
+    $destPath = Join-Path $DestinationFolder $fileName
+
+    if (-not $Force -and (Test-Path $destPath)) {
+        Write-Verbose "Already exists: $fileName"
+        return $destPath
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would download: $fileName"
+        return $destPath
+    }
+
+    Write-Log "Downloading: $fileName"
+    Invoke-WebRequest -Uri $Url -OutFile $destPath
+    return $destPath
+}
+
+# ==============================
+# KB Work
+# ==============================
+function Invoke-KBWork {
+    Write-Verbose "=== KB Work ==="
+
+    # Build queries
+    $osQuery  = "Cumulative Updates for Windows 11 Version 25H2 for x64-based Systems"
+    $netQuery = ".NET Framework for Windows 11 Version 25H2 x64"
+
+    Write-Verbose "[KB] OS Query:  $osQuery"
+    Write-Verbose "[KB] .NET Query: $netQuery"
+
+    # Search OS updates
+    Write-Verbose "[KB] Searching OS updates..."
+    $osGuids = Search-UpdateCatalogHtml -Query $osQuery
+
+    # Search .NET updates
+    Write-Verbose "[KB] Searching .NET updates..."
+    $netGuids = Search-UpdateCatalogHtml -Query $netQuery
+
+    # Combine
+    $allGuids = $osGuids + $netGuids
+
+    Write-Verbose "[KB] Total updates found: $($allGuids.Count)"
+    Write-Debug   "[KB] GUID list:`n$($allGuids -join "`n")"
+
+    Write-Verbose "[KB] KB work complete."
+    return $allGuids
+}
+
+# ==============================
+# Driver export
+# ==============================
+function Invoke-DriverWork {
+    param([string]$WinpeDriverRoot, [switch]$Clean)
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $WinpeDriverRoot"
+        } else {
+            if (Test-Path $WinpeDriverRoot) { Remove-Item $WinpeDriverRoot -Recurse -Force }
+        }
+        return
+    }
+
+    if (-not $DryRun -and -not (Test-Path $WinpeDriverRoot)) {
+        New-Item -ItemType Directory -Path $WinpeDriverRoot -Force | Out-Null
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would run DISM export-driver"
+        return
+    }
+
+    Write-Log "Exporting drivers..."
+    $args = "/online /export-driver /destination:`"$WinpeDriverRoot`""
+    $p = Start-Process -FilePath dism.exe -ArgumentList $args -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$WinpeDriverRoot\dism.log"
+    if ($p.ExitCode -ne 0) { throw "DISM failed." }
+}
+
+# ==============================
+# Registry export
+# ==============================
+function Invoke-RegWork {
+    param([string]$RegistryRoot, [switch]$Clean)
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $RegistryRoot"
+        } else {
+            if (Test-Path $RegistryRoot) { Remove-Item $RegistryRoot -Recurse -Force }
+        }
+        return
+    }
+
+    if (-not $DryRun -and -not (Test-Path $RegistryRoot)) {
+        New-Item -ItemType Directory -Path $RegistryRoot -Force | Out-Null
+    }
+
+    $keys = @(
+        'HKLM\SOFTWARE\MyCompany',
+        'HKCU\Software\MyCompany'
+    )
+
+    foreach ($key in $keys) {
+        $safe = ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
+        $dest = Join-Path $RegistryRoot $safe
+
+        if ($DryRun) {
+            Write-Log "[DryRun] Would export: $key -> $dest"
+        } else {
+            reg.exe export "$key" "$dest" /y | Out-Null
+        }
+    }
+}
+
+# ==============================
+# Install Drivers.cmd
+# ==============================
+function Write-InstallDriversScript {
+    param([string]$RootFolder)
+
+    $path = Join-Path $RootFolder 'Install Drivers.cmd'
+    $content = @'
+@echo off
+setlocal enabledelayedexpansion
+
+set LOG=%SystemRoot%\Temp\InstallDrivers.log
+echo [%DATE% %TIME%] Starting driver installation... > "%LOG%"
+
+set DRIVERROOT=%~dp0$WinpeDriver$
+if not exist "%DRIVERROOT%" (
+    echo $WinpeDriver$ folder not found at "%DRIVERROOT%". >> "%LOG%"
+    exit /b 0
+)
+
+pnputil /add-driver "%DRIVERROOT%\*.inf" /subdirs /install >> "%LOG%" 2>&1
+
+exit /b %ERRORLEVEL%
+'@
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $path"
+    } else {
+        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
+    }
+}
+
+# ==============================
+# SetupComplete.cmd
+# ==============================
+function Write-SetupCompleteScript {
+    param([string]$ScriptsRoot)
+
+    $path = Join-Path $ScriptsRoot 'SetupComplete.cmd'
+    $content = @'
+@echo off
+setlocal enabledelayedexpansion
+
+set LOG=%SystemRoot%\Setup\Scripts\SetupComplete.log
+echo [%DATE% %TIME%] SetupComplete starting... > "%LOG%"
+
+set BASE=%~dp0
+
+:: Apply .NET updates
+for %%F in ("%BASE%..\..\..\Updates\NET\*.msu") do (
+    wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Apply OS updates
+for %%F in ("%BASE%..\..\..\Updates\OSCU\*.msu") do (
+    wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Import registry
+for %%F in ("%BASE%..\..\..\Registry\*.reg") do (
+    reg.exe import "%%F" >> "%LOG%" 2>&1
+)
+
+:: Install drivers
+if exist "%SystemDrive%\Install Drivers.cmd" (
+    call "%SystemDrive%\Install Drivers.cmd" >> "%LOG%" 2>&1
+)
+
+echo [%DATE% %TIME%] SetupComplete finished. >> "%LOG%"
+exit /b 0
+'@
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $path"
+    } else {
+        if (-not (Test-Path $ScriptsRoot)) {
+            New-Item -ItemType Directory -Path $ScriptsRoot -Force | Out-Null
+        }
+        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
+    }
+}
+
+# ==============================
+# SetupConfig files
+# ==============================
+function Write-SetupConfigFiles {
+    param([string]$RootFolder)
+
+    $cleanPath   = Join-Path $RootFolder 'SetupConfig-Clean.ini'
+    $upgradePath = Join-Path $RootFolder 'SetupConfig-Upgrade.ini'
+
+    $clean = @'
+[SetupConfig]
+Auto=Clean
+DynamicUpdate=Enable
+Telemetry=Disable
+'@
+
+    $upgrade = @'
+[SetupConfig]
+Auto=Upgrade
+DynamicUpdate=Enable
+Telemetry=Disable
+'@
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $cleanPath"
+        Write-Log "[DryRun] Would write: $upgradePath"
+    } else {
+        Set-Content -LiteralPath $cleanPath   -Value $clean   -Encoding ASCII
+        Set-Content -LiteralPath $upgradePath -Value $upgrade -Encoding ASCII
+    }
+}
+
+# ==============================
+# Main orchestration
+# ==============================
+if ($KB) {
+    Invoke-KBWork -WinOS $WinOS -Version $Version -Arch $Arch `
+        -UpdatesOSCU $paths.UpdatesOSCU -UpdatesNET $paths.UpdatesNET `
+        -Clean:$Clean -Refresh:$Refresh
+}
+
+if ($Drivers) {
+    Invoke-DriverWork -WinpeDriverRoot $paths.WinpeDriverRoot -Clean:$Clean
+}
+
+if ($Reg) {
+    Invoke-RegWork -RegistryRoot $paths.RegistryRoot -Clean:$Clean
+}
+
+if (-not ($Clean -and -not ($KB -or $Drivers -or $Reg))) {
+    Write-InstallDriversScript -RootFolder $Folder
+    Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot
+    Write-SetupConfigFiles -RootFolder $Folder
+}
+
+Write-Log "Completed."
+Write-Verbose "Script execution finished."
