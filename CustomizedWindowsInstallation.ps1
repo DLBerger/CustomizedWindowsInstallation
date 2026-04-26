@@ -153,7 +153,7 @@ $script:Name = "CustomizedWindowsInstallation.ps1"
 # ==============================
 # git information
 # ==============================
-$GitHash = "7300909"
+$GitHash = "9aac552"
 
 # ==============================
 # Script identity
