@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "42f27b3"
+$GitHash = "4541eb6"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -133,7 +133,7 @@ function Invoke-CatalogRequest {
         [string]$Uri
     )
 
-    Write-Verbose "[CatalogRequest] GET $Uri"
+    Write-Verbose "[Invoke-CatalogRequest] GET $Uri"
 
     try {
         $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
@@ -154,7 +154,7 @@ function Invoke-CatalogRequest {
 
         $Response = Invoke-WebRequest @Params
 
-        Write-Debug "[CatalogRequest] RawContent length = $($Response.RawContent.Length)"
+        Write-Debug "[Invoke-CatalogRequest] RawContent length = $($Response.RawContent.Length)"
 
         $HtmlDoc = [HtmlAgilityPack.HtmlDocument]::new()
         $HtmlDoc.LoadHtml($Response.RawContent.ToString())
@@ -162,7 +162,7 @@ function Invoke-CatalogRequest {
         return $HtmlDoc
     }
     catch {
-        Write-Warning "[CatalogRequest] Failed: $_"
+        Write-Warning "[Invoke-CatalogRequest] Failed: $_"
         return $null
     }
     finally {
@@ -175,8 +175,8 @@ function Parse-CatalogSearchResults {
         [HtmlAgilityPack.HtmlDocument]$Html
     )
 
-    Write-Verbose "[CatalogParse] Extracting update IDs from HTML"
-#   Write-Debug "[CatalogParse] HTML: $($Html.DocumentNode.InnerHtml)"
+    Write-Verbose "[Parse-CatalogSearchResults] Extracting update IDs from HTML"
+#   Write-Debug "[Parse-CatalogSearchResults] HTML: $($Html.DocumentNode.InnerHtml)"
 
     $ids = @()
 
@@ -185,11 +185,11 @@ function Parse-CatalogSearchResults {
     $matches = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
     foreach ($m in $matches) {
         $id = $m.Groups[1].Value
-        Write-Debug "[CatalogParse] Found update ID: $id"
+        Write-Debug "[Parse-CatalogSearchResults] Found update ID: $id"
         $ids += $id
     }
 
-    Write-Verbose "[CatalogParse] Total IDs extracted: $($ids.Count)"
+    Write-Verbose "[Parse-CatalogSearchResults] Total IDs extracted: $($ids.Count)"
     return $ids
 }
 function Search-UpdateCatalogHtml {
@@ -198,17 +198,17 @@ function Search-UpdateCatalogHtml {
         [string]$Query
     )
 
-    Write-Verbose "[CatalogSearch] Searching Update Catalog (HTML mode)"
-    Write-Verbose "[CatalogSearch] Query: $Query"
+    Write-Verbose "[Search-UpdateCatalogHtml] Searching Update Catalog (HTML mode)"
+    Write-Verbose "[Search-UpdateCatalogHtml] Query: $Query"
 
     $Encoded = [uri]::EscapeDataString($Query)
     $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
 
-    Write-Debug "[CatalogSearch] Encoded URI: $Uri"
+    Write-Debug "[Search-UpdateCatalogHtml] Encoded URI: $Uri"
 
     $Html = Invoke-CatalogRequest -Uri $Uri
     if (-not $Html) {
-        Write-Warning "[CatalogSearch] No HTML returned"
+        Write-Warning "[Search-UpdateCatalogHtml] No HTML returned"
         return @()
     }
 
@@ -222,7 +222,7 @@ function Get-UpdateLinks {
         [string] $Guid
     )
 
-    Write-Verbose "[Details] [Get-UpdateLinks] GUID           : $Guid"
+    Write-Verbose "[Get-UpdateLinks] GUID           : $Guid"
 
     # Build POST body
     $postObject = @{
@@ -243,25 +243,25 @@ function Get-UpdateLinks {
         UseBasicParsing = $true
     }
 
-    Write-Verbose "[Details] [Get-UpdateLinks] Requesting DownloadDialog.aspx via POST"
-    Write-Debug   "[Details] [Get-UpdateLinks] POST body:`n$($body.UpdateIDs)"
+    Write-Verbose "[Get-UpdateLinks] Requesting DownloadDialog.aspx via POST"
+    Write-Debug   "[Get-UpdateLinks] POST body:`n$($body.UpdateIDs)"
 
     $response = Invoke-WebRequest @params
 
-    Write-Verbose "[Details] [Get-UpdateLinks] received $($response.RawContentLength)-byte response of content type $($response.ContentType)"
+    Write-Verbose "[Get-UpdateLinks] received $($response.RawContentLength)-byte response of content type $($response.ContentType)"
 
     # Normalize content for regex (remove newlines, collapse whitespace)
     $content = $response.Content -replace "www\.download\.windowsupdate", "download.windowsupdate"
     $content = $content -replace "`r?`n", ' '
     $content = $content -replace '\s+', ' '
 
-    Write-Verbose "[Details] [Get-UpdateLinks] Normalized content length : $($content.Length)"
-    Write-Debug   "[Details] [Get-UpdateLinks] Raw content (first 400 chars):`n$($content.Substring(0, [Math]::Min(400, $content.Length)))"
+    Write-Verbose "[Get-UpdateLinks] Normalized content length : $($content.Length)"
+    Write-Debug   "[Get-UpdateLinks] Raw content (first 400 chars):`n$($content.Substring(0, [Math]::Min(400, $content.Length)))"
 
     # Regex: downloadInformation[<idx>].files[<idx>].url = '<url>'
     $pattern = "downloadInformation\[(\d+)\]\.files\[(\d+)\]\.url\s*=\s*'([^']*)'"
-    Write-Verbose "[Details] [Get-UpdateLinks] Running regex against DownloadDialog content"
-    Write-Debug   "[Details] [Get-UpdateLinks] Regex pattern: $pattern"
+    Write-Verbose "[Get-UpdateLinks] Running regex against DownloadDialog content"
+    Write-Debug   "[Get-UpdateLinks] Regex pattern: $pattern"
 
     $matches = [regex]::Matches(
         $content,
@@ -270,16 +270,25 @@ function Get-UpdateLinks {
     )
 
     if ($matches.Count -eq 0) {
-        Write-Warning "[Details] [Get-UpdateLinks] No downloadInformation URL matches for $Guid (regex returned 0 matches)"
+        Write-Warning "[Get-UpdateLinks] No downloadInformation URL matches for $Guid (regex returned 0 matches)"
         return @()
     }
 
-    Write-Verbose "[Details] [Get-UpdateLinks] Found $($matches.Count) download link match(es)"
+    Write-Verbose "[Get-UpdateLinks] Found $($matches.Count) download link match(es)"
 
     $links = foreach ($m in $matches) {
         $downloadInfoIndex = [int]$m.Groups[1].Value
         $fileIndex         = [int]$m.Groups[2].Value
         $url               = $m.Groups[3].Value
+
+        # Ignore garbage like "h" or empty strings
+        if ([string]::IsNullOrWhiteSpace($url) -or
+            $url.Length -lt 10 -or
+            -not ($url -like "http*")) {
+
+            Write-Warning ("[Get-UpdateLinks] Ignoring malformed URL: {0}" -f $url)
+            continue
+        }
 
         # Try to extract KB number if present
         $kbNumber = 0
@@ -301,9 +310,9 @@ function Get-UpdateLinks {
     # Sort by KB descending (0s at the end)
     $sorted = $unique | Sort-Object KB -Descending
 
-    Write-Verbose "[Details] [Get-UpdateLinks] Unique URLs after de-duplication: $($sorted.Count)"
+    Write-Verbose "[Get-UpdateLinks] Unique URLs after de-duplication: $($sorted.Count)"
     foreach ($l in $sorted) {
-        Write-Debug "[Details] [Get-UpdateLinks] URL=$($l.URL) KB=$($l.KB) DI=$($l.DownloadInfoIndex) FI=$($l.FileIndex)"
+        Write-Debug "[Get-UpdateLinks] URL=$($l.URL) KB=$($l.KB) DI=$($l.DownloadInfoIndex) FI=$($l.FileIndex)"
     }
 
     return $sorted
@@ -380,7 +389,7 @@ function Download-MUFile {
 
     # No URLs → nothing to do
     if (-not $Update.DownloadUrls -or $Update.DownloadUrls.Count -eq 0) {
-        Write-Verbose ("[Download] No download URLs for update {0}" -f $Update.Guid)
+        Write-Verbose ("[Download-MUFile] No download URLs for update {0}" -f $Update.Guid)
         return @()
     }
 
@@ -392,14 +401,14 @@ function Download-MUFile {
         $url = $Update.DownloadUrls[$i]
 
         if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Warning ("[Download] Empty URL at index {0} for update {1}" -f $i, $Update.Guid)
+            Write-Warning ("[Download-MUFile] Empty URL at index {0} for update {1}" -f $i, $Update.Guid)
             continue
         }
 
         $fileName = Split-Path -Path $url -Leaf
         $destPath = Join-Path $TargetFolder $fileName
 
-        Write-Host ("[Download] {0}" -f $fileName)
+        Write-Host ("[Download-MUFile] {0}" -f $fileName)
 
         # ------------------------------------------------------------
         # Retry loop (3 attempts)
@@ -464,7 +473,7 @@ function Download-MUFile {
         }
 
         if (-not $success) {
-            Write-Warning ("[Download] FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
+            Write-Warning ("[Download-MUFile] FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
             continue
         }
 
@@ -488,7 +497,7 @@ function Get-UpdateDetails {
         [string] $Guid
     )
 
-    Write-Verbose ("[Details] Fetching details for GUID {0}" -f $Guid)
+    Write-Verbose ("[Get-UpdateDetails] Fetching details for GUID {0}" -f $Guid)
 
     # ------------------------------------------------------------
     # DETAILS PAGE (ScopedViewInline.aspx)
@@ -505,7 +514,7 @@ function Get-UpdateDetails {
         $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
     }
     catch {
-        Write-Warning ("[Details] Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
+        Write-Warning ("[Get-UpdateDetails] Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
         return $null
     }
 
@@ -543,13 +552,13 @@ function Get-UpdateDetails {
         $downloadUrls = $links.URL | Select-Object -Unique
     }
 
-    Write-Verbose ("[Details] Title: {0}" -f $title)
-    Write-Verbose ("[Details] KB: {0}" -f $kb)
-    Write-Verbose ("[Details] Classification: {0}" -f $classification)
+    Write-Verbose ("[Get-UpdateDetails] Title: {0}" -f $title)
+    Write-Verbose ("[Get-UpdateDetails] KB: {0}" -f $kb)
+    Write-Verbose ("[Get-UpdateDetails] Classification: {0}" -f $classification)
     if ($supersededBy.Count -gt 0) {
-        Write-Verbose ("[Details] SupersededBy: {0}" -f ($supersededBy -join ', '))
+        Write-Verbose ("[Get-UpdateDetails] SupersededBy: {0}" -f ($supersededBy -join ', '))
     }
-    Write-Verbose ("[Details] URLs: {0}" -f $downloadUrls.Count)
+    Write-Verbose ("[Get-UpdateDetails] URLs: {0}" -f $downloadUrls.Count)
 
     return [pscustomobject]@{
         Guid           = $Guid
@@ -640,7 +649,7 @@ function Invoke-KBWork {
 
     # Clean mode
     if ($Clean) {
-        Write-Verbose "[KB] Clean mode: removing all existing update files and manifests..."
+        Write-Verbose "[Invoke-KBWork] Clean mode: removing all existing update files and manifests..."
         foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
             if (Test-Path $folder) {
                 Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
@@ -657,23 +666,23 @@ function Invoke-KBWork {
     $osQuery  = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
     $netQuery = ".NET Framework for Windows $WinOS Version $Version $Arch"
 
-    Write-Verbose "[KB] OS Query:  $osQuery"
-    Write-Verbose "[KB] .NET Query: $netQuery"
+    Write-Verbose "[Invoke-KBWork] OS Query:  $osQuery"
+    Write-Verbose "[Invoke-KBWork] .NET Query: $netQuery"
 
     # Search OS updates
-    Write-Verbose "[KB] Searching OS updates..."
+    Write-Verbose "[Invoke-KBWork] Searching OS updates..."
     $osGuids = Search-UpdateCatalogHtml -Query $osQuery
 
     # Search .NET updates
-    Write-Verbose "[KB] Searching .NET updates..."
+    Write-Verbose "[Invoke-KBWork] Searching .NET updates..."
     $netGuids = Search-UpdateCatalogHtml -Query $netQuery
 
     $allGuids = ($osGuids + $netGuids) | Select-Object -Unique
-    Write-Verbose "[KB] Total GUIDs found: $($allGuids.Count)"
-    Write-Debug   "[KB] GUID list:`n$($allGuids -join "`n")"
+    Write-Verbose "[Invoke-KBWork] Total GUIDs found: $($allGuids.Count)"
+    Write-Debug   "[Invoke-KBWork] GUID list:`n$($allGuids -join "`n")"
 
     if (-not $allGuids -or $allGuids.Count -eq 0) {
-        Write-Verbose "[KB] No updates found."
+        Write-Verbose "[Invoke-KBWork] No updates found."
         return @()
     }
 
@@ -686,16 +695,16 @@ function Invoke-KBWork {
                 $details += $d
             }
             else {
-                Write-Verbose "[KB] No download URLs for $g"
+                Write-Verbose "[Invoke-KBWork] No download URLs for $g"
             }
         }
         catch {
-            Write-Warning ("Failed to resolve details for {0}: {1}" -f $g, $($_.Exception.Message))
+            Write-Warning ("[Invoke-KBWork] Failed to resolve details for {0}: {1}" -f $g, $($_.Exception.Message))
         }
     }
 
     if ($details.Count -eq 0) {
-        Write-Verbose "[KB] No usable updates after details resolution."
+        Write-Verbose "[Invoke-KBWork] No usable updates after details resolution."
         return @()
     }
 
@@ -709,11 +718,11 @@ function Invoke-KBWork {
 
     $effective = $details | Where-Object { -not $supersededSet.ContainsKey($_.Guid) }
 
-    Write-Verbose "[KB] Effective (non-superseded) updates: $($effective.Count)"
-    Write-Debug   "[KB] Effective GUIDs:`n$($effective.Guid -join "`n")"
+    Write-Verbose "[Invoke-KBWork] Effective (non-superseded) updates: $($effective.Count)"
+    Write-Debug   "[Invoke-KBWork] Effective GUIDs:`n$($effective.Guid -join "`n")"
 
     if ($effective.Count -eq 0) {
-        Write-Verbose "[KB] No effective updates after supersedence filtering."
+        Write-Verbose "[Invoke-KBWork] No effective updates after supersedence filtering."
         return @()
     }
 
@@ -728,7 +737,7 @@ function Invoke-KBWork {
 
     # Sync: remove stale files in all folders
     foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
-        Write-Verbose "[Sync] Checking folder: $folder"
+        Write-Verbose "[Invoke-KBWork] Checking folder: $folder"
 
         $existingFiles = @()
         if (Test-Path $folder) {
@@ -739,7 +748,7 @@ function Invoke-KBWork {
         $stale = $existingFiles | Where-Object { $_ -notin $requiredFiles }
         foreach ($file in $stale) {
             $path = Join-Path $folder $file
-            Write-Verbose "[Sync] Removing stale file: $file"
+            Write-Verbose "[Invoke-KBWork] Removing stale file: $file"
             Remove-Item $path -Force
         }
     }
@@ -771,7 +780,7 @@ function Invoke-KBWork {
         $folder  = $kvp.Key
         $entries = $kvp.Value
         if ($entries.Count -gt 0) {
-            Write-Verbose "[Manifest] Writing manifest for $folder"
+            Write-Verbose "[Invoke-KBWork] Writing manifest for $folder"
             Write-Manifest -Folder $folder -Entries $entries
         }
         else {
@@ -782,7 +791,7 @@ function Invoke-KBWork {
         }
     }
 
-    Write-Verbose "[KB] KB work complete."
+    Write-Verbose "[Invoke-KBWork] KB work complete."
     return $results
 }
 
