@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "4eceb79"
+$GitHash = "ab753c5"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -627,7 +627,7 @@ function Invoke-KBWork {
         [switch] $Clean
     )
 
-    Write-Host "Starting KB update workflow..."
+    Write-Log "Starting KB update workflow..."
 
     # Derive SSU folder from OSCU parent
     $rootFolder = Split-Path $UpdatesOSCU -Parent
@@ -1105,4 +1105,3 @@ Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot
 Write-SetupConfigFiles -RootFolder $Folder
 
 Write-Log "Completed."
-Write-Verbose "Script execution finished."
