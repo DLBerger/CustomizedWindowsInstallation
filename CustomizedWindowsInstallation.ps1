@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "b1d8ef3"
+$GitHash = "42f27b3"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -313,54 +313,6 @@ function Get-UpdateLinks {
 # Download helper
 # ==============================
 
-function Compute-Sha256 {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    if (-not (Test-Path $Path -PathType Leaf)) {
-        throw "File not found for SHA-256: $Path"
-    }
-
-    $stream = [System.IO.File]::OpenRead($Path)
-    try {
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        $hashBytes = $sha.ComputeHash($stream)
-        ($hashBytes | ForEach-Object { $_.ToString("x2") }) -join ''
-    }
-    finally {
-        $stream.Dispose()
-    }
-}
-
-function Invoke-WithRetry {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [scriptblock] $ScriptBlock,
-
-        [int] $MaxAttempts = 3,
-        [int] $DelaySeconds = 3
-    )
-
-    $attempt = 0
-    while ($true) {
-        $attempt++
-        try {
-            return & $ScriptBlock
-        }
-        catch {
-            if ($attempt -ge $MaxAttempts) {
-                throw
-            }
-            Write-Warning "Attempt $attempt failed: $($_.Exception.Message). Retrying in $DelaySeconds seconds..."
-            Start-Sleep -Seconds $DelaySeconds
-        }
-    }
-}
-
 function Ensure-Folder {
     [CmdletBinding()]
     param(
@@ -426,136 +378,103 @@ function Download-MUFile {
 
     $results = @()
 
-    function Test-HashMatch {
-        param($path, $expected)
-        try {
-            $actual = Compute-Sha256 -Path $path
-            return ($actual -ieq $expected), $actual
-        }
-        catch {
-            return $false, $null
-        }
+    # No URLs → nothing to do
+    if (-not $Update.DownloadUrls -or $Update.DownloadUrls.Count -eq 0) {
+        Write-Verbose ("[Download] No download URLs for update {0}" -f $Update.Guid)
+        return @()
     }
+
+    # Detect whether output is piped (CR-safe)
+    $isPiped = -not $Host.UI.RawUI.KeyAvailable
 
     for ($i = 0; $i -lt $Update.DownloadUrls.Count; $i++) {
 
         $url = $Update.DownloadUrls[$i]
-        $fileName = Split-Path -Path $url -Leaf
-        $destPath = Join-Path $TargetFolder $fileName
 
-        # Expected hash from Microsoft (aligned by index)
-        $expectedHash = $null
-        if ($Update.PSObject.Properties.Name -contains 'Sha256Hashes' -and
-            $Update.Sha256Hashes.Count -gt $i) {
-            $expectedHash = $Update.Sha256Hashes[$i]
-        }
-
-        if (-not $expectedHash) {
-            Write-Host "[Download] WARNING: No expected SHA-256 for $fileName. Marking unusable."
-            $results += [pscustomobject]@{
-                FileName = $fileName
-                FullPath = ""
-                Sha256   = "0"
-                Url      = $url
-            }
+        if ([string]::IsNullOrWhiteSpace($url)) {
+            Write-Warning ("[Download] Empty URL at index {0} for update {1}" -f $i, $Update.Guid)
             continue
         }
 
-        # ---------- existing file check ----------
-        if (Test-Path $destPath -PathType Leaf) {
-            $match, $actual = Test-HashMatch $destPath $expectedHash
+        $fileName = Split-Path -Path $url -Leaf
+        $destPath = Join-Path $TargetFolder $fileName
 
-            if ($match) {
-                Write-Verbose "[Download] Existing file hash matches expected: $fileName"
-                $results += [pscustomobject]@{
-                    FileName = $fileName
-                    FullPath = $destPath
-                    Sha256   = $actual
-                    Url      = $url
-                }
-                continue
-            }
+        Write-Host ("[Download] {0}" -f $fileName)
 
-            Write-Host "[Download] Hash mismatch on existing file, deleting and re-downloading: $fileName"
-            Remove-Item -Force $destPath -ErrorAction SilentlyContinue
-        }
-
-        # ---------- retry loop ----------
+        # ------------------------------------------------------------
+        # Retry loop (3 attempts)
+        # ------------------------------------------------------------
         $maxRetries = 3
-        $finalHash  = "0"
-        $success    = $false
+        $success = $false
 
         for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
 
-            Write-Host "[Download] $fileName (attempt $attempt of $maxRetries)"
+            Write-Host ("  Attempt {0} of {1}" -f $attempt, $maxRetries)
 
-            $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.Method = "GET"
-            $req.UserAgent = "Mozilla/5.0"
+            try {
+                $req = [System.Net.HttpWebRequest]::Create($url)
+                $req.Method = "GET"
+                $req.UserAgent = "Mozilla/5.0"
 
-            $resp = $req.GetResponse()
-            $total = $resp.ContentLength
-            $inStream  = $resp.GetResponseStream()
-            $outStream = [System.IO.File]::OpenWrite($destPath)
+                $resp = $req.GetResponse()
+                $total = $resp.ContentLength
+                $inStream  = $resp.GetResponseStream()
+                $outStream = [System.IO.File]::Open($destPath, [System.IO.FileMode]::Create)
 
-            $buffer = New-Object byte[] 65536
-            $totalRead = 0
-            $nextMark = 10
+                $buffer = New-Object byte[] 65536
+                $totalRead = 0
+                $nextMark = 10
 
-            Write-Host ("  0%  0/{0} bytes" -f $total)
+                # Initial progress line
+                Write-Host ("    0%  0/{0} bytes" -f $total)
 
-            while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $outStream.Write($buffer, 0, $read)
-                $totalRead += $read
+                while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $outStream.Write($buffer, 0, $read)
+                    $totalRead += $read
 
-                if ($total -gt 0) {
-                    $pct = [math]::Floor(($totalRead / $total) * 100)
-                    if ($pct -ge $nextMark) {
-                        Write-Host (" {0,3}%  {1:N0}/{2:N0} bytes" -f $pct, $totalRead, $total)
-                        $nextMark += 10
+                    if ($total -gt 0) {
+                        $pct = [math]::Floor(($totalRead / $total) * 100)
+
+                        if ($pct -ge $nextMark) {
+                            # Pipe-safe: always print full lines, never CR
+                            Write-Host ("  {0,3}%  {1:N0}/{2:N0} bytes" -f $pct, $totalRead, $total)
+                            $nextMark += 10
+                        }
                     }
                 }
-            }
 
-            Write-Host "Completed: $fileName"
+                Write-Host ("  Completed: {0}" -f $fileName)
 
-            $outStream.Close()
-            $inStream.Close()
-            $resp.Close()
+                $outStream.Close()
+                $inStream.Close()
+                $resp.Close()
 
-            $match, $actual = Test-HashMatch $destPath $expectedHash
-
-            if ($match) {
-                $finalHash = $actual
-                $success   = $true
+                $success = $true
                 break
             }
+            catch {
+                Write-Warning ("  ERROR: {0}" -f $_.Exception.Message)
+                Write-Warning ("  Retrying...")
 
-            Write-Host "[Download] ERROR: Hash mismatch after download: $fileName"
-            Write-Host "          Expected: $expectedHash"
-            Write-Host "          Actual:   $actual"
-            Write-Host "          Retrying..."
-
-            Remove-Item -Force $destPath -ErrorAction SilentlyContinue
+                # Clean up partial file
+                if (Test-Path $destPath) {
+                    Remove-Item -Force $destPath -ErrorAction SilentlyContinue
+                }
+            }
         }
 
         if (-not $success) {
-            Write-Host "[Download] FAILED: $fileName after $maxRetries attempts. Marking unusable."
-            Remove-Item -Force $destPath -ErrorAction SilentlyContinue
-            $results += [pscustomobject]@{
-                FileName = $fileName
-                FullPath = $destPath
-                Sha256   = "0"
-                Url      = $url
-            }
+            Write-Warning ("[Download] FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
+            continue
         }
-        else {
-            $results += [pscustomobject]@{
-                FileName = $fileName
-                FullPath = $destPath
-                Sha256   = $finalHash
-                Url      = $url
-            }
+
+        # ------------------------------------------------------------
+        # Return simple info (no hashes)
+        # ------------------------------------------------------------
+        $results += [pscustomobject]@{
+            FileName = $fileName
+            FullPath = $destPath
+            Url      = $url
         }
     }
 
@@ -571,13 +490,14 @@ function Get-UpdateDetails {
 
     Write-Verbose ("[Details] Fetching details for GUID {0}" -f $Guid)
 
-    # ============================================================
-    # 1. DETAILS PAGE (ScopedViewInline.aspx)
+    # ------------------------------------------------------------
+    # DETAILS PAGE (ScopedViewInline.aspx)
+    # Extracts:
     #    - Title
-    #    - KB
+    #    - KB number
     #    - Classification
-    #    - SupersededBy
-    # ============================================================
+    #    - SupersededBy list
+    # ------------------------------------------------------------
 
     $detailsUrl = "https://www.catalog.update.microsoft.com/ScopedViewInline.aspx?updateid=$Guid"
 
@@ -613,90 +533,14 @@ function Get-UpdateDetails {
         }
     }
 
-    # ============================================================
-    # 2. DOWNLOAD POPUP (DownloadDialog.aspx)
-    #    - Download URLs (via JS assignments)
-    #    - SHA-256 hashes (via downloadInformation JSON)
-    # ============================================================
+    # ------------------------------------------------------------
+    # 2. DOWNLOAD LINKS (via Get-UpdateLinks)
+    # ------------------------------------------------------------
 
-    $postObject = @"
-[{""updateID"":""$Guid"",""revisionNumber"":0}]
-"@.Trim()
-
-    $body = "updateIDs=$postObject"
-
-    try {
-        $downloadResponse = Invoke-WebRequest `
-            -Uri "https://www.catalog.update.microsoft.com/DownloadDialog.aspx" `
-            -Method POST `
-            -ContentType "application/x-www-form-urlencoded" `
-            -Body $body `
-            -UseBasicParsing `
-            -ErrorAction Stop
-    }
-    catch {
-        Write-Warning ("[Details] Failed to fetch download dialog for {0}: {1}" -f $Guid, $_.Exception.Message)
-        return $null
-    }
-
-    $raw = $downloadResponse.Content
-
-    # Normalize for regex
-    $content = $raw -replace "www\.download\.windowsupdate", "download.windowsupdate"
-    $content = $content -replace "`r?`n", " "
-    $content = $content -replace "\s+", " "
-    Write-Debug ("[Details] Download dialog content length: {0}" -f $content.Length)
-    Write-Debug ("[Details] Download dialog content: {0}" -f $content)
-
-    # --- URLs via JS: downloadInformation[x].files[y].url = '...';
+    $links = Get-UpdateLinks -Guid $Guid
     $downloadUrls = @()
-    $urlPattern = "downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*'([^']+)'"
-    $urlMatches = [regex]::Matches(
-        $content,
-        $urlPattern,
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    foreach ($m in $urlMatches) {
-        $u = $m.Groups[1].Value
-        if (-not [string]::IsNullOrWhiteSpace($u)) {
-            $downloadUrls += $u
-        }
-    }
-
-    # Deduplicate URLs
-    $downloadUrls = $downloadUrls | Select-Object -Unique
-
-    # --- SHA-256 hashes via JSON: downloadInformation = [ ... ];
-    $sha256List = @()
-    $jsonPattern = "downloadInformation\s*=\s*(\[[\s\S]+?\]);"
-    $jsonMatch = [regex]::Match(
-        $raw,
-        $jsonPattern,
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    if ($jsonMatch.Success) {
-        $jsonText = $jsonMatch.Groups[1].Value
-
-        try {
-            $json = $jsonText | ConvertFrom-Json
-            foreach ($entry in $json) {
-                if ($entry.files) {
-                    foreach ($f in $entry.files) {
-                        if ($f.sha256Hash) {
-                            $sha256List += $f.sha256Hash
-                        }
-                    }
-                }
-                elseif ($entry.sha256Hash) {
-                    $sha256List += $entry.sha256Hash
-                }
-            }
-        }
-        catch {
-            Write-Verbose ("[Details] Failed to parse SHA-256 JSON for {0}: {1}" -f $Guid, $_.Exception.Message)
-        }
+    if ($links) {
+        $downloadUrls = $links.URL | Select-Object -Unique
     }
 
     Write-Verbose ("[Details] Title: {0}" -f $title)
@@ -706,7 +550,6 @@ function Get-UpdateDetails {
         Write-Verbose ("[Details] SupersededBy: {0}" -f ($supersededBy -join ', '))
     }
     Write-Verbose ("[Details] URLs: {0}" -f $downloadUrls.Count)
-    Write-Verbose ("[Details] SHA256: {0}" -f $sha256List.Count)
 
     return [pscustomobject]@{
         Guid           = $Guid
@@ -715,7 +558,6 @@ function Get-UpdateDetails {
         Classification = $classification
         SupersededBy   = $supersededBy
         DownloadUrls   = $downloadUrls
-        Sha256Hashes   = $sha256List
     }
 }
 
@@ -741,7 +583,6 @@ function Get-TargetFolderForUpdate {
         default                  { return $UpdatesOSCU }
     }
 }
-
 function Build-ManifestEntry {
     [CmdletBinding()]
     param(
@@ -753,16 +594,16 @@ function Build-ManifestEntry {
     )
 
     [pscustomobject]@{
-        Guid          = $Details.Guid
-        Title         = $Details.Title
-        Classification= $Details.Classification
-        DownloadUrl   = $DownloadInfo.Url
-        FileName      = $DownloadInfo.FileName
-        Sha256        = $DownloadInfo.Sha256
-        SupersededBy  = $Details.SupersededBy
-        Timestamp     = (Get-Date).ToString("s")
+        Guid           = $Details.Guid
+        Title          = $Details.Title
+        Classification = $Details.Classification
+        DownloadUrl    = $DownloadInfo.Url
+        FileName       = $DownloadInfo.FileName
+        SupersededBy   = $Details.SupersededBy
+        Timestamp      = (Get-Date).ToString("s")
     }
 }
+
 function Invoke-KBWork {
     [CmdletBinding()]
     param(
@@ -919,13 +760,6 @@ function Invoke-KBWork {
         $downloadInfos = Download-MUFile -Update $d -TargetFolder $targetFolder
 
         foreach ($downloadInfo in $downloadInfos) {
-
-            # Skip unusable files (hash = "0")
-            if ($downloadInfo.Sha256 -eq "0") {
-                Write-Host "[Manifest] Skipping unusable file: $($downloadInfo.FileName)"
-                continue
-            }
-
             $entry = Build-ManifestEntry -Details $d -DownloadInfo $downloadInfo
             $manifestByFolder[$targetFolder] += $entry
             $results += $entry
