@@ -102,7 +102,7 @@ param(
 )
 
 # git hash
-$GitHash = "c98df56"
+$GitHash = "e9e3f64"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -667,17 +667,26 @@ function Invoke-KBWork {
     }
 
     # Build queries
-    $osQuery  = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
-    $netQuery = ".NET Framework for Windows $WinOS Version $Version $Arch"
+    $queries = @(
+        [pscustomobject]@{
+            Title = "OS Updates"
+            Query = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
+        }
+        [pscustomobject]@{
+            Title = ".NET Updates"
+            Query = ".NET Framework for Windows $WinOS Version $Version $Arch"
+        }
+    )
+    
+    $results = @()
+    foreach ($q in $queries) {
+        Write-Host ("Searching for {0}..." -f $q.Title)
+        Write-Verbose ("Query: {0}" -f $q.Query)
 
-    Write-Host "Searching for OS updates..."
-    Write-Verbose "OS Query:  $osQuery"
-    $osGuids = Search-UpdateCatalogHtml -Query $osQuery
-    Write-Host "Searching for .NET updates..."
-    Write-Verbose ".NET Query: $netQuery"
-    $netGuids = Search-UpdateCatalogHtml -Query $netQuery
+        $results += Search-UpdateCatalogHtml -Query $q.Query
+    }
 
-    $allGuids = ($osGuids + $netGuids) | Select-Object -Unique
+    $allGuids = $results | Select-Object -Unique
     Write-Host ("Found {0} total updates to process" -f $allGuids.Count)
     Write-Debug " GUID list:`n$($allGuids -join "`n")"
 
