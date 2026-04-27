@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "2d1cfa3"
+$GitHash = "e43abfb"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -300,44 +300,6 @@ function Get-UpdateLinks {
     return $sorted
 }
 
-function Get-UpdateDetails {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, Position = 0)]
-        [string] $Guid
-    )
-
-    Write-Verbose "[Details] GUID : $Guid"
-
-    # Use POST-based DownloadDialog parser
-    $links = Get-UpdateLinks -Guid $Guid
-
-    if (-not $links -or $links.Count -eq 0) {
-        Write-Warning "[Details] No download URLs found for $Guid (Get-UpdateLinks returned 0 items)"
-        return @()
-    }
-
-    Write-Verbose "[Details] Total download URLs for $Guid : $($links.Count)"
-
-    # Project into a simple, stable shape that the rest of the pipeline can consume
-    # (adjust only if the downstream code expects extra fields)
-    $results = foreach ($link in $links) {
-        [PSCustomObject]@{
-            Guid              = $Guid
-            Url               = $link.URL
-            KB                = $link.KB
-            DownloadInfoIndex = $link.DownloadInfoIndex
-            FileIndex         = $link.FileIndex
-        }
-    }
-
-    foreach ($r in $results) {
-        Write-Debug "[Details] Resolved: GUID=$($r.Guid) KB=$($r.KB) URL=$($r.Url)"
-    }
-
-    return $results
-}
-
 # ==============================
 # Download helper
 # ==============================
@@ -471,10 +433,7 @@ function Download-MUFile {
 function Get-UpdateDetails {
     [CmdletBinding()]
     param (
-        [Parameter(
-            Mandatory = $true,
-            Position = 0
-        )]
+        [Parameter( Mandatory = $true, Position = 0)]
         [string] $Guid
     )
 
