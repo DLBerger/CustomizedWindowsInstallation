@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "26fca0f"
+$GitHash = "1913bb8"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -133,7 +133,7 @@ function Invoke-CatalogRequest {
         [string]$Uri
     )
 
-    Write-Verbose "[Invoke-CatalogRequest] GET $Uri"
+    Write-Verbose "GET $Uri"
 
     try {
         $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
@@ -162,7 +162,7 @@ function Invoke-CatalogRequest {
         return $HtmlDoc
     }
     catch {
-        Write-Warning "[Invoke-CatalogRequest] Failed: $_"
+        Write-Warning "Failed: $_"
         return $null
     }
     finally {
@@ -175,7 +175,7 @@ function Parse-CatalogSearchResults {
         [HtmlAgilityPack.HtmlDocument]$Html
     )
 
-    Write-Verbose "[Parse-CatalogSearchResults] Extracting update IDs from HTML"
+    Write-Verbose "Extracting update IDs from HTML"
 #   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
 
     $ids = @()
@@ -189,7 +189,7 @@ function Parse-CatalogSearchResults {
         $ids += $id
     }
 
-    Write-Verbose "[Parse-CatalogSearchResults] Total IDs extracted: $($ids.Count)"
+    Write-Verbose "Total IDs extracted: $($ids.Count)"
     return $ids
 }
 function Search-UpdateCatalogHtml {
@@ -198,8 +198,8 @@ function Search-UpdateCatalogHtml {
         [string]$Query
     )
 
-    Write-Verbose "[Search-UpdateCatalogHtml] Searching Update Catalog (HTML mode)"
-    Write-Verbose "[Search-UpdateCatalogHtml] Query: $Query"
+    Write-Verbose "Searching Update Catalog (HTML mode)"
+    Write-Verbose "Query: $Query"
 
     $Encoded = [uri]::EscapeDataString($Query)
     $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
@@ -208,7 +208,7 @@ function Search-UpdateCatalogHtml {
 
     $Html = Invoke-CatalogRequest -Uri $Uri
     if (-not $Html) {
-        Write-Warning "[Search-UpdateCatalogHtml] No HTML returned"
+        Write-Warning "No HTML returned"
         return @()
     }
 
@@ -222,8 +222,8 @@ function Get-UpdateLinks {
         [string] $Guid
     )
 
-    Write-Verbose ("[Get-UpdateLinks] GUID           : {0}" -f $Guid)
-    Write-Verbose ("[Get-UpdateLinks] Requesting DownloadDialog.aspx via POST")
+    Write-Verbose ("GUID: {0}" -f $Guid)
+    Write-Verbose ("Requesting DownloadDialog.aspx via POST")
 
     # Build POST body
     $postObject = @{
@@ -244,7 +244,7 @@ function Get-UpdateLinks {
         UseBasicParsing = $true
     }
 
-    Write-Verbose "[Get-UpdateLinks] Requesting DownloadDialog.aspx via POST"
+    Write-Verbose "Requesting DownloadDialog.aspx via POST"
     Write-Debug   "POST body:`n$($body.UpdateIDs)"
 
     $response = Invoke-WebRequest @params
@@ -271,7 +271,7 @@ function Get-UpdateLinks {
     )
 
     if ($matches.Count -eq 0) {
-        Write-Warning "[Get-UpdateLinks] No downloadInformation URL matches for $Guid (regex returned 0 matches)"
+        Write-Warning "No downloadInformation URL matches for $Guid (regex returned 0 matches)"
         return @()
     }
 
@@ -287,7 +287,7 @@ function Get-UpdateLinks {
             $url.Length -lt 10 -or
             -not ($url -like "http*")) {
 
-            Write-Warning ("[Get-UpdateLinks] Ignoring malformed URL: {0}" -f $url)
+            Write-Warning ("Ignoring malformed URL: {0}" -f $url)
             continue
         }
 
@@ -386,7 +386,7 @@ function Download-MUFile {
 
     Ensure-Folder -Path $TargetFolder
 
-    Write-Host ("Preparing downloads for update {0}" -f $Update.Guid)
+    Write-Host ("Preparing downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
 
     $results = @()
 
@@ -402,7 +402,7 @@ function Download-MUFile {
     foreach ($url in $Update.DownloadUrls) {
 
         if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Warning ("[Download-MUFile] Ignoring empty URL for update {0}" -f $Update.Guid)
+            Write-Warning ("Ignoring empty URL for update {0}" -f $Update.Guid)
             continue
         }
 
@@ -489,7 +489,7 @@ function Download-MUFile {
         }
 
         if (-not $success) {
-            Write-Warning ("[Download-MUFile] FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
+            Write-Warning ("FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
             continue
         }
 
@@ -500,7 +500,7 @@ function Download-MUFile {
         }
     }
 
-    Write-Host ("Completed downloads for update {0}" -f $Update.Guid)
+    Write-Host ("Completed downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
 
     return $results
 }
@@ -509,17 +509,19 @@ function Get-UpdateDetails {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [int] $Count,
+
+        [Parameter(Mandatory = $true)]
         [string] $Guid
     )
 
-    Write-Host ("Processing update {0}" -f $Guid)
+    Write-Host ("Processing update #{0}: {1}" -f $Count, $Guid)
 
     # ------------------------------------------------------------
     # DETAILS PAGE (ScopedViewInline.aspx)
     # Extracts:
     #    - Title
     #    - KB number
-    #    - Classification
     #    - SupersededBy list
     # ------------------------------------------------------------
 
@@ -529,7 +531,7 @@ function Get-UpdateDetails {
         $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
     }
     catch {
-        Write-Warning ("[Get-UpdateDetails] Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
+        Write-Warning ("Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
         return $null
     }
 
@@ -544,10 +546,6 @@ function Get-UpdateDetails {
     $kbMatch = [regex]::Match($title, "KB\d+")
     $kb = if ($kbMatch.Success) { $kbMatch.Value } else { "" }
 
-    # Classification
-    $classNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_classificationText']")
-    $classification = if ($classNode) { $classNode.InnerText.Trim() } else { "" }
-
     # SupersededBy
     $supersededBy = @()
     $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
@@ -561,7 +559,7 @@ function Get-UpdateDetails {
     # 2. DOWNLOAD LINKS (via Get-UpdateLinks)
     # ------------------------------------------------------------
 
-    Write-Host "Retrieving download links..."
+    Write-Host "Finding download links for $title"
 
     $links = Get-UpdateLinks -Guid $Guid
     $downloadUrls = @()
@@ -573,7 +571,6 @@ function Get-UpdateDetails {
 
     Write-Verbose ("Title: {0}" -f $title)
     Write-Verbose ("KB: {0}" -f $kb)
-    Write-Verbose ("Classification: {0}" -f $classification)
     if ($supersededBy.Count -gt 0) {
         Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
     }
@@ -583,32 +580,8 @@ function Get-UpdateDetails {
         Guid           = $Guid
         Title          = $title
         KB             = $kb
-        Classification = $classification
         SupersededBy   = $supersededBy
         DownloadUrls   = $downloadUrls
-    }
-}
-
-function Get-TargetFolderForUpdate {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [pscustomobject] $Details,
-
-        [Parameter(Mandatory = $true)]
-        [string] $UpdatesOSCU,
-
-        [Parameter(Mandatory = $true)]
-        [string] $UpdatesNET,
-
-        [Parameter(Mandatory = $true)]
-        [string] $UpdatesSSU
-    )
-
-    switch -Regex ($Details.Classification) {
-        'Servicing Stack Update' { return $UpdatesSSU }
-        '\.NET'                  { return $UpdatesNET }
-        default                  { return $UpdatesOSCU }
     }
 }
 
@@ -625,7 +598,6 @@ function Build-ManifestEntry {
     [pscustomobject]@{
         Guid           = $Details.Guid
         Title          = $Details.Title
-        Classification = $Details.Classification
         DownloadUrl    = $DownloadInfo.Url
         FileName       = $DownloadInfo.FileName
         SupersededBy   = $Details.SupersededBy
@@ -674,10 +646,6 @@ function Invoke-KBWork {
             if (Test-Path $folder) {
                 Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
                     Remove-Item -Force
-                $manifestPath = Join-Path $folder 'manifest.json'
-                if (Test-Path $manifestPath -PathType Leaf) {
-                    Remove-Item $manifestPath -Force
-                }
             }
         }
     }
@@ -705,9 +673,11 @@ function Invoke-KBWork {
     Write-Host "Retrieving update details..."
 
     $details = @()
+    $count = 0
     foreach ($g in $allGuids) {
+        $count++
         try {
-            $d = Get-UpdateDetails -Guid $g
+            $d = Get-UpdateDetails -Count $count -Guid $g
             if ($d -and $d.DownloadUrls -and $d.DownloadUrls.Count -gt 0) {
                 $details += $d
             }
@@ -779,10 +749,12 @@ function Invoke-KBWork {
         $UpdatesSSU  = @()
     }
 
-    $results = @()
-
     foreach ($d in $effective) {
-        $targetFolder = Get-TargetFolderForUpdate -Details $d -UpdatesOSCU $UpdatesOSCU -UpdatesNET $UpdatesNET -UpdatesSSU $UpdatesSSU
+        $targetFolder = switch -Regex ($d.Title) {
+                'Servicing Stack Update' { $UpdatesSSU }
+                '\.NET'                  { $UpdatesNET }
+                default                  { $UpdatesOSCU }
+            }
 
         # Download all files for this update into the target folder
         $downloadInfos = Download-MUFile -Update $d -TargetFolder $targetFolder
@@ -790,12 +762,10 @@ function Invoke-KBWork {
         foreach ($downloadInfo in $downloadInfos) {
             $entry = Build-ManifestEntry -Details $d -DownloadInfo $downloadInfo
             $manifestByFolder[$targetFolder] += $entry
-            $results += $entry
         }
     }
 
     Write-Host "Writing manifests..."
-
     foreach ($kvp in $manifestByFolder.GetEnumerator()) {
         $folder  = $kvp.Key
         $entries = $kvp.Value
@@ -812,7 +782,6 @@ function Invoke-KBWork {
     }
 
     Write-Host "KB update workflow complete."
-    return $results
 }
 
 # ==============================
