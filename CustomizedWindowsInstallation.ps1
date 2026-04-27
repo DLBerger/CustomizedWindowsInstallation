@@ -37,9 +37,6 @@ If omitted:
 CPU architecture: 'x64' or 'arm64'.
 If omitted, defaults to 'x64'.
 
-.PARAMETER All
-Enables all work modes (KB, Drivers, Reg).
-
 .PARAMETER KB
 Download OS and .NET updates.
 
@@ -48,6 +45,12 @@ Export drivers into $WinpeDriver$.
 
 .PARAMETER Reg
 Export registry keys.
+
+.PARAMETER Files
+Generate Install Drivers.cmd, SetupComplete.cmd, and SetupConfig-*.ini files.
+
+.PARAMETER All
+Shorthand for -KB -Drivers -Reg -Files and the default if no specific switch is provided.
 
 .PARAMETER Clean
 Remove generated content instead of creating it.
@@ -85,10 +88,12 @@ param(
     [ValidateSet('x64','arm64')]
     [string]$Arch,
 
-    [switch]$All,
     [switch]$KB,
     [switch]$Drivers,
     [switch]$Reg,
+    [switch]$Files,
+    [switch]$All,
+
     [switch]$Clean,
 
     [switch]$DryRun,
@@ -97,7 +102,7 @@ param(
 )
 
 # git hash
-$GitHash = "ab753c5"
+$GitHash = "c98df56"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -122,6 +127,7 @@ function Write-Log {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Write-Host "[$ts] [$Level] $Message"
 }
+
 
 # =========================
 # HTML-based Update Catalog search
@@ -641,13 +647,23 @@ function Invoke-KBWork {
 
     # Clean mode
     if ($Clean) {
-        Write-Host "Cleaning update folders..."
-        foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
-            if (Test-Path $folder) {
-                Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
-                    Remove-Item -Force
+        if ($DryRun) {
+            Write-Log "[DryRun] Would clean update folders: $UpdatesOSCU, $UpdatesNET, $UpdatesSSU"
+        } else {
+            Write-log "Cleaning update folders"
+            foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
+                if (Test-Path $folder) {
+                    Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
+                        Remove-Item -Force
+                }
             }
         }
+        return
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would fill update folders: $UpdatesOSCU, $UpdatesNET, $UpdatesSSU"
+        return
     }
 
     # Build queries
@@ -794,6 +810,7 @@ function Invoke-DriverWork {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $WinpeDriverRoot"
         } else {
+            Write-Log "Removing: $WinpeDriverRoot"
             if (Test-Path $WinpeDriverRoot) { Remove-Item $WinpeDriverRoot -Recurse -Force }
         }
         return
@@ -824,6 +841,7 @@ function Invoke-RegWork {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $RegistryRoot"
         } else {
+            Write-Log "Removing: $RegistryRoot"
             if (Test-Path $RegistryRoot) { Remove-Item $RegistryRoot -Recurse -Force }
         }
         return
@@ -846,6 +864,7 @@ function Invoke-RegWork {
         if ($DryRun) {
             Write-Log "[DryRun] Would export: $key -> $dest"
         } else {
+            Write-Log "Export: $key -> $dest"
             reg.exe export "$key" "$dest" /y | Out-Null
         }
     }
@@ -855,7 +874,7 @@ function Invoke-RegWork {
 # Install Drivers.cmd
 # ==============================
 function Write-InstallDriversScript {
-    param([string]$RootFolder)
+    param([string]$RootFolder, [switch]$Clean)
 
     $path = Join-Path $RootFolder 'Install Drivers.cmd'
     $content = @'
@@ -876,6 +895,16 @@ pnputil /add-driver "%DRIVERROOT%\*.inf" /subdirs /install >> "%LOG%" 2>&1
 exit /b %ERRORLEVEL%
 '@
 
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $path"
+        } else {
+            Write-Log "Removing: $path"
+            if (Test-Path $path) { Remove-Item $path -Force }
+        }
+        return
+    }
+
     if ($DryRun) {
         Write-Log "[DryRun] Would write: $path"
     } else {
@@ -887,7 +916,7 @@ exit /b %ERRORLEVEL%
 # SetupComplete.cmd
 # ==============================
 function Write-SetupCompleteScript {
-    param([string]$ScriptsRoot)
+    param([string]$ScriptsRoot, [switch]$Clean)
 
     $path = Join-Path $ScriptsRoot 'SetupComplete.cmd'
     $content = @'
@@ -923,9 +952,20 @@ echo [%DATE% %TIME%] SetupComplete finished. >> "%LOG%"
 exit /b 0
 '@
 
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $path"
+        } else {
+            Write-Log "Removing: $path"
+            if (Test-Path $path) { Remove-Item $path -Force }
+        }
+        return
+    }
+
     if ($DryRun) {
         Write-Log "[DryRun] Would write: $path"
     } else {
+        Write-Log "Writing: $path"
         if (-not (Test-Path $ScriptsRoot)) {
             New-Item -ItemType Directory -Path $ScriptsRoot -Force | Out-Null
         }
@@ -937,31 +977,46 @@ exit /b 0
 # SetupConfig files
 # ==============================
 function Write-SetupConfigFiles {
-    param([string]$RootFolder)
+    param([string]$RootFolder, [switch]$Clean)
 
     $cleanPath   = Join-Path $RootFolder 'SetupConfig-Clean.ini'
     $upgradePath = Join-Path $RootFolder 'SetupConfig-Upgrade.ini'
 
-    $clean = @'
+    $cleanini = @'
 [SetupConfig]
 Auto=Clean
 DynamicUpdate=Enable
 Telemetry=Disable
 '@
 
-    $upgrade = @'
+    $upgradeini = @'
 [SetupConfig]
 Auto=Upgrade
 DynamicUpdate=Enable
 Telemetry=Disable
 '@
 
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $cleanPath"
+            Write-Log "[DryRun] Would remove: $upgradePath"
+        } else {
+            Write-Log "Removing: $cleanPath"
+            if (Test-Path $cleanPath) { Remove-Item $cleanPath -Force }
+            Write-Log "Removing: $upgradePath"
+            if (Test-Path $upgradePath) { Remove-Item $upgradePath -Force }
+        }
+        return
+    }
+
     if ($DryRun) {
         Write-Log "[DryRun] Would write: $cleanPath"
         Write-Log "[DryRun] Would write: $upgradePath"
     } else {
-        Set-Content -LiteralPath $cleanPath   -Value $clean   -Encoding ASCII
-        Set-Content -LiteralPath $upgradePath -Value $upgrade -Encoding ASCII
+        Write-Log "Writing: $cleanPath"
+        Set-Content -LiteralPath $cleanPath   -Value $cleanini   -Encoding ASCII
+        Write-Log "Writing: $upgradePath"
+        Set-Content -LiteralPath $upgradePath -Value $upgradeini -Encoding ASCII
     }
 }
 
@@ -1047,13 +1102,15 @@ $workSwitches = @()
 if ($KB)      { $workSwitches += 'KB' }
 if ($Drivers) { $workSwitches += 'Drivers' }
 if ($Reg)     { $workSwitches += 'Reg' }
+if ($Files)   { $workSwitches += 'Files' }
 
 if (-not $workSwitches) {
-    Write-Verbose "Defaulting to -All"
+    # All if no specific components selected
     $KB = $true
     $Drivers = $true
     $Reg = $true
-    $workSwitches = 'All'
+    $Files = $true
+    $workSwitches = @('All')
 }
 
 Write-Log "Target profile: Windows $WinOS $Version $Arch"
@@ -1082,6 +1139,7 @@ if (-not $Clean -and -not $DryRun) {
         }
     }
 }
+
 # ==============================
 # Main orchestration
 # ==============================
@@ -1099,9 +1157,11 @@ if ($Reg) {
     Invoke-RegWork -RegistryRoot $paths.RegistryRoot -Clean:$Clean
 }
 
-Write-Log "Creating scripts and config files..."
-Write-InstallDriversScript -RootFolder $Folder
-Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot
-Write-SetupConfigFiles -RootFolder $Folder
+if ($Files) {
+    Write-Log "Scripts and config files..."
+    Write-InstallDriversScript -RootFolder $Folder -Clean:$Clean
+    Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot -Clean:$Clean
+    Write-SetupConfigFiles -RootFolder $Folder -Clean:$Clean
+}
 
 Write-Log "Completed."
