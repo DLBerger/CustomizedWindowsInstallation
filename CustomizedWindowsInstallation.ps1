@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "526f466"
+$GitHash = "b1d8ef3"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -569,10 +569,10 @@ function Get-UpdateDetails {
         [string] $Guid
     )
 
-    Write-Verbose "[Details] Fetching details for GUID: $Guid"
+    Write-Verbose ("[Details] Fetching details for GUID {0}" -f $Guid)
 
     # ============================================================
-    # 1. FETCH DETAILS PAGE (ScopedViewInline.aspx)
+    # 1. DETAILS PAGE (ScopedViewInline.aspx)
     #    - Title
     #    - KB
     #    - Classification
@@ -585,26 +585,26 @@ function Get-UpdateDetails {
         $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
     }
     catch {
-        Write-Warning "[Details] Failed to fetch details page for {0}: {1}" -f $Guid, $($_.Exception.Message)
+        Write-Warning ("[Details] Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
         return $null
     }
 
     $detailsDoc = New-Object HtmlAgilityPack.HtmlDocument
     $detailsDoc.LoadHtml($detailsResponse.Content)
 
-    # --- Title ---
+    # Title
     $titleNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_titleText']")
     $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "" }
 
-    # --- KB ---
+    # KB
     $kbMatch = [regex]::Match($title, "KB\d+")
     $kb = if ($kbMatch.Success) { $kbMatch.Value } else { "" }
 
-    # --- Classification ---
+    # Classification
     $classNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_classificationText']")
     $classification = if ($classNode) { $classNode.InnerText.Trim() } else { "" }
 
-    # --- SupersededBy ---
+    # SupersededBy
     $supersededBy = @()
     $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
     if ($supNodes) {
@@ -614,67 +614,99 @@ function Get-UpdateDetails {
     }
 
     # ============================================================
-    # 2. FETCH DOWNLOAD POPUP (DownloadDialog.aspx)
-    #    - Download URLs
-    #    - SHA-256 hashes
+    # 2. DOWNLOAD POPUP (DownloadDialog.aspx)
+    #    - Download URLs (via JS assignments)
+    #    - SHA-256 hashes (via downloadInformation JSON)
     # ============================================================
 
-    $postBody = "updateIDs=[{`"updateID`":`"$Guid`",`"revisionNumber`":0}]"
+    $postObject = @"
+[{""updateID"":""$Guid"",""revisionNumber"":0}]
+"@.Trim()
+
+    $body = "updateIDs=$postObject"
 
     try {
         $downloadResponse = Invoke-WebRequest `
             -Uri "https://www.catalog.update.microsoft.com/DownloadDialog.aspx" `
             -Method POST `
             -ContentType "application/x-www-form-urlencoded" `
-            -Body $postBody `
+            -Body $body `
             -UseBasicParsing `
             -ErrorAction Stop
     }
     catch {
-        Write-Warning "[Details] Failed to fetch download dialog for {0}: {1}" -f $Guid, $($_.Exception.Message)
+        Write-Warning ("[Details] Failed to fetch download dialog for {0}: {1}" -f $Guid, $_.Exception.Message)
         return $null
     }
 
-    $html = $downloadResponse.Content
-    $doc = New-Object HtmlAgilityPack.HtmlDocument
-    $doc.LoadHtml($html)
+    $raw = $downloadResponse.Content
 
-    # --- Download URLs ---
+    # Normalize for regex
+    $content = $raw -replace "www\.download\.windowsupdate", "download.windowsupdate"
+    $content = $content -replace "`r?`n", " "
+    $content = $content -replace "\s+", " "
+    Write-Debug ("[Details] Download dialog content length: {0}" -f $content.Length)
+    Write-Debug ("[Details] Download dialog content: {0}" -f $content)
+
+    # --- URLs via JS: downloadInformation[x].files[y].url = '...';
     $downloadUrls = @()
-    $urlNodes = $doc.DocumentNode.SelectNodes("//a[contains(@href, 'download.windowsupdate.com')]")
-    if ($urlNodes) {
-        foreach ($node in $urlNodes) {
-            $href = $node.GetAttributeValue("href", "")
-            if (-not [string]::IsNullOrWhiteSpace($href)) {
-                $downloadUrls += $href
-            }
+    $urlPattern = "downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*'([^']+)'"
+    $urlMatches = [regex]::Matches(
+        $content,
+        $urlPattern,
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
+    foreach ($m in $urlMatches) {
+        $u = $m.Groups[1].Value
+        if (-not [string]::IsNullOrWhiteSpace($u)) {
+            $downloadUrls += $u
         }
     }
 
-    # --- SHA-256 hashes ---
+    # Deduplicate URLs
+    $downloadUrls = $downloadUrls | Select-Object -Unique
+
+    # --- SHA-256 hashes via JSON: downloadInformation = [ ... ];
     $sha256List = @()
-    $jsonMatch = [regex]::Match($html, "downloadInformation\s*:\s*(\[[^\]]+\])")
+    $jsonPattern = "downloadInformation\s*=\s*(\[[\s\S]+?\]);"
+    $jsonMatch = [regex]::Match(
+        $raw,
+        $jsonPattern,
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+
     if ($jsonMatch.Success) {
         $jsonText = $jsonMatch.Groups[1].Value
+
         try {
             $json = $jsonText | ConvertFrom-Json
             foreach ($entry in $json) {
-                if ($entry.sha256Hash) {
+                if ($entry.files) {
+                    foreach ($f in $entry.files) {
+                        if ($f.sha256Hash) {
+                            $sha256List += $f.sha256Hash
+                        }
+                    }
+                }
+                elseif ($entry.sha256Hash) {
                     $sha256List += $entry.sha256Hash
                 }
             }
         }
         catch {
-            Write-Verbose "[Details] Failed to parse SHA-256 JSON for $Guid"
+            Write-Verbose ("[Details] Failed to parse SHA-256 JSON for {0}: {1}" -f $Guid, $_.Exception.Message)
         }
     }
 
-    Write-Verbose "[Details] Title: $title"
-    Write-Verbose "[Details] KB: $kb"
-    Write-Verbose "[Details] Classification: $classification"
-    Write-Verbose "[Details] SupersededBy: $($supersededBy -join ', ')"
-    Write-Verbose "[Details] URLs: $($downloadUrls.Count)"
-    Write-Verbose "[Details] SHA256: $($sha256List.Count)"
+    Write-Verbose ("[Details] Title: {0}" -f $title)
+    Write-Verbose ("[Details] KB: {0}" -f $kb)
+    Write-Verbose ("[Details] Classification: {0}" -f $classification)
+    if ($supersededBy.Count -gt 0) {
+        Write-Verbose ("[Details] SupersededBy: {0}" -f ($supersededBy -join ', '))
+    }
+    Write-Verbose ("[Details] URLs: {0}" -f $downloadUrls.Count)
+    Write-Verbose ("[Details] SHA256: {0}" -f $sha256List.Count)
 
     return [pscustomobject]@{
         Guid           = $Guid
