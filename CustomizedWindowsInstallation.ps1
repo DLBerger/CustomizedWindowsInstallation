@@ -59,7 +59,17 @@ Show actions without performing them.
 Displays help and exits.
 
 .NOTES
-- Fully compatible with Windows PowerShell 5.x.
+Fully compatible with Windows PowerShell 5.x.
+
+References:
+[1] https://learn.microsoft.com/en-us/windows/deployment/update/media-dynamic-update
+[2] https://github.com/Marco-online/MSCatalogLTS
+[3] https://www.deploymentresearch.com/removing-applications-from-your-windows-11-image-before-and-during-deployment/
+[4] https://thedotsource.com/2021/03/16/building-iso-files-with-powershell-7/
+[5] https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-pnpcustomizationswinpe-driverpaths
+[6] https://community.spiceworks.com/t/autounattend-xml-driver-path-issue-for-windows-11-24h2-and-25h2/1244985
+[7] https://github.com/wikijm/PowerShell-AdminScripts/blob/master/Miscellaneous/New-IsoFile.ps1
+[8] https://www.winhelponline.com/blog/servicing-stack-diagnosis-dism-sfc/
 #>
 
 param(
@@ -87,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "58e9fd6"
+$GitHash = "2d1cfa3"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
