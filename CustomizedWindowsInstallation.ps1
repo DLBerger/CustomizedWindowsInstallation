@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "4541eb6"
+$GitHash = "883f469"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -217,12 +217,13 @@ function Search-UpdateCatalogHtml {
 
 function Get-UpdateLinks {
     [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, Position = 0)]
+    param(
+        [Parameter(Mandatory = $true)]
         [string] $Guid
     )
 
-    Write-Verbose "[Get-UpdateLinks] GUID           : $Guid"
+    Write-Verbose ("[Get-UpdateLinks] GUID           : {0}" -f $Guid)
+    Write-Verbose ("[Get-UpdateLinks] Requesting DownloadDialog.aspx via POST")
 
     # Build POST body
     $postObject = @{
@@ -396,17 +397,30 @@ function Download-MUFile {
     # Detect whether output is piped (CR-safe)
     $isPiped = -not $Host.UI.RawUI.KeyAvailable
 
-    for ($i = 0; $i -lt $Update.DownloadUrls.Count; $i++) {
-
-        $url = $Update.DownloadUrls[$i]
+    foreach ($url in $Update.DownloadUrls) {
 
         if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Warning ("[Download-MUFile] Empty URL at index {0} for update {1}" -f $i, $Update.Guid)
+            Write-Warning ("[Download-MUFile] Ignoring empty URL for update {0}" -f $Update.Guid)
             continue
         }
 
         $fileName = Split-Path -Path $url -Leaf
         $destPath = Join-Path $TargetFolder $fileName
+
+        # ------------------------------------------------------------
+        # SKIP IF FILE ALREADY EXISTS
+        # ------------------------------------------------------------
+        if (Test-Path $destPath -PathType Leaf) {
+            Write-Verbose ("[Download-MUFile] Skipping existing file: {0}" -f $fileName)
+
+            $results += [pscustomobject]@{
+                FileName = $fileName
+                FullPath = $destPath
+                Url      = $url
+            }
+
+            continue
+        }
 
         Write-Host ("[Download-MUFile] {0}" -f $fileName)
 
@@ -477,9 +491,6 @@ function Download-MUFile {
             continue
         }
 
-        # ------------------------------------------------------------
-        # Return simple info (no hashes)
-        # ------------------------------------------------------------
         $results += [pscustomobject]@{
             FileName = $fileName
             FullPath = $destPath
