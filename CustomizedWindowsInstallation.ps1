@@ -97,7 +97,7 @@ param(
 )
 
 # git hash
-$GitHash = "1913bb8"
+$GitHash = "4eceb79"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -833,6 +833,7 @@ function Invoke-RegWork {
         New-Item -ItemType Directory -Path $RegistryRoot -Force | Out-Null
     }
 
+    Write-Log "Exporting Registry keys..."
     $keys = @(
         'HKLM\SOFTWARE\MyCompany',
         'HKCU\Software\MyCompany'
@@ -1043,17 +1044,16 @@ Write-Verbose "Resolved working folder: $Folder"
 # Determine work modes
 # ==============================
 $workSwitches = @()
-if ($All)     { $workSwitches += 'All' }
 if ($KB)      { $workSwitches += 'KB' }
 if ($Drivers) { $workSwitches += 'Drivers' }
 if ($Reg)     { $workSwitches += 'Reg' }
 
 if (-not $workSwitches) {
-    $All = $true
+    Write-Verbose "Defaulting to -All"
     $KB = $true
     $Drivers = $true
     $Reg = $true
-    Write-Verbose "Defaulting to -All"
+    $workSwitches = 'All'
 }
 
 Write-Log "Target profile: Windows $WinOS $Version $Arch"
@@ -1099,6 +1099,7 @@ if ($Reg) {
     Invoke-RegWork -RegistryRoot $paths.RegistryRoot -Clean:$Clean
 }
 
+Write-Log "Creating scripts and config files..."
 Write-InstallDriversScript -RootFolder $Folder
 Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot
 Write-SetupConfigFiles -RootFolder $Folder
