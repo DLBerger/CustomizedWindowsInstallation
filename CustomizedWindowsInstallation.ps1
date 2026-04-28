@@ -104,7 +104,7 @@ param(
 )
 
 # git hash
-$GitHash = "ad88fc8"
+$GitHash = "857f317"
 
 # ==============================
 # Core names
@@ -965,6 +965,7 @@ if "%USB%"=="" (
 echo Using USB source at %USB% >> "%LOG%"
 
 :: Apply Updates in the correct order
+
 {2}
 :: Import registry files
 for %%F in ("%USB%\{3}\*.reg") do (
@@ -980,7 +981,7 @@ echo [%DATE% %TIME%] SetupComplete finished. >> "%LOG%"
 exit /b 0
 '@
 
-    $osTemplate = @'
+$osTemplate = @'
 :: Install MSU files
 for %%F in ("%USB%\{0}\{1}\*.msu") do (
     echo Installing MSU %%F >> "%LOG%"
@@ -991,6 +992,28 @@ for %%F in ("%USB%\{0}\{1}\*.msu") do (
 for %%F in ("%USB%\{0}\{1}\*.cab") do (
     echo Installing CAB %%F >> "%LOG%"
     dism.exe /online /add-package /packagepath:"%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Install EXE installers
+for %%F in ("%USB%\{0}\{1}\*.exe") do (
+    echo Installing EXE %%F >> "%LOG%"
+    "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Install MSI installers
+for %%F in ("%USB%\{0}\{1}\*.msi") do (
+    echo Installing MSI %%F >> "%LOG%"
+    msiexec.exe /i "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Run CMD/BAT scripts
+for %%F in ("%USB%\{0}\{1}\*.cmd") do (
+    echo Running CMD %%F >> "%LOG%"
+    call "%%F" >> "%LOG%" 2>&1
+)
+for %%F in ("%USB%\{0}\{1}\*.bat") do (
+    echo Running BAT %%F >> "%LOG%"
+    call "%%F" >> "%LOG%" 2>&1
 )
 
 '@
