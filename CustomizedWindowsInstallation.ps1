@@ -105,7 +105,21 @@ param(
 )
 
 # git hash
-$GitHash = "8b54e5c"
+$GitHash = "09b40dd"
+
+# ==============================
+# Core names
+# ==============================
+$names = [ordered]@{
+    Updates     = 'Updates'
+    SSU         = 'SSU'
+    OSCU        = 'OSCU'
+    NET         = 'NET'
+    MISC        = 'MISC'
+    WinpeDriver = '$WinpeDriver$'
+    Registry    = 'Registry'
+    Scripts     = 'sources\$OEM$\$$\Setup\Scripts'
+}
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -178,37 +192,21 @@ function Invoke-CatalogRequest {
         [Net.ServicePointManager]::SecurityProtocol = $oldProtocol
     }
 }
-function Parse-CatalogSearchResults {
-    param(
-        [Parameter(Mandatory)]
-        [HtmlAgilityPack.HtmlDocument]$Html
-    )
-
-    Write-Verbose "Extracting update IDs from HTML"
-#   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
-
-    $ids = @()
-
-    # Look for goToDetails('GUID')
-    $pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-    $matches = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
-    foreach ($m in $matches) {
-        $id = $m.Groups[1].Value
-        Write-Debug "Found update ID: $id"
-        $ids += $id
-    }
-
-    Write-Verbose "Total IDs extracted: $($ids.Count)"
-    return $ids
-}
 function Search-UpdateCatalogHtml {
     param(
         [Parameter(Mandatory)]
-        [string]$Query
+        [string]$Query,
+
+        [Parameter(Mandatory)]
+        [bool]$FirstOnly,
+
+        [Parameter(Mandatory)]
+        [string]$TargetFolder
     )
 
-    Write-Verbose "Searching Update Catalog (HTML mode)"
-    Write-Verbose "Query: $Query"
+    Write-Host ("Searching for {0}{1}..." -f $Query, ($(if ($FirstOnly) { " (first result only)" } else { "" })))
+
+    $ids = @()
 
     $Encoded = [uri]::EscapeDataString($Query)
     $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
@@ -218,10 +216,27 @@ function Search-UpdateCatalogHtml {
     $Html = Invoke-CatalogRequest -Uri $Uri
     if (-not $Html) {
         Write-Warning "No HTML returned"
-        return @()
+        return $ids
     }
 
-    return Parse-CatalogSearchResults -Html $Html
+    Write-Verbose "Extracting update IDs from HTML"
+#   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
+
+    # Look for goToDetails('GUID')
+    $pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
+    $matches = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
+    foreach ($m in $matches) {
+        $id = $m.Groups[1].Value
+        Write-Debug "Found update GUID: $id"
+        $ids += [PSCustomObject]@{
+            Guid         = $id
+            TargetFolder = $TargetFolder
+        }
+        if ($FirstOnly) { break }
+    }
+
+    Write-Verbose "Total IDs extracted: $($ids.Count)"
+    return $ids
 }
 
 function Get-UpdateLinks {
@@ -236,9 +251,9 @@ function Get-UpdateLinks {
 
     # Build POST body
     $postObject = @{
-        size        = 0
-        UpdateID    = $Guid
-        UpdateIDInfo= $Guid
+        size         = 0
+        UpdateID     = $Guid
+        UpdateIDInfo = $Guid
     } | ConvertTo-Json -Compress
 
     $body = @{
@@ -246,10 +261,10 @@ function Get-UpdateLinks {
     }
 
     $params = @{
-        Uri         = "https://www.catalog.update.microsoft.com/DownloadDialog.aspx"
-        Method      = 'POST'
-        Body        = $body
-        ContentType = "application/x-www-form-urlencoded"
+        Uri             = "https://www.catalog.update.microsoft.com/DownloadDialog.aspx"
+        Method          = 'POST'
+        Body            = $body
+        ContentType     = "application/x-www-form-urlencoded"
         UseBasicParsing = $true
     }
 
@@ -387,7 +402,7 @@ function Download-MUFile {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [pscustomobject] $Update,
+        [PSCustomObject] $Update,
 
         [Parameter(Mandatory = $true)]
         [string] $TargetFolder
@@ -402,7 +417,7 @@ function Download-MUFile {
     # No URLs → nothing to do
     if (-not $Update.DownloadUrls -or $Update.DownloadUrls.Count -eq 0) {
         Write-Host ("No download URLs for update {0}" -f $Update.Guid)
-        return @()
+        return $results
     }
 
     # Detect whether output is piped (CR-safe)
@@ -424,7 +439,7 @@ function Download-MUFile {
         if (Test-Path $destPath -PathType Leaf) {
             Write-Host ("File already exists, skipping: {0}" -f $fileName)
 
-            $results += [pscustomobject]@{
+            $results += [PSCustomObject]@{
                 FileName = $fileName
                 FullPath = $destPath
                 Url      = $url
@@ -502,7 +517,7 @@ function Download-MUFile {
             continue
         }
 
-        $results += [pscustomobject]@{
+        $results += [PSCustomObject]@{
             FileName = $fileName
             FullPath = $destPath
             Url      = $url
@@ -521,7 +536,10 @@ function Get-UpdateDetails {
         [int] $Count,
 
         [Parameter(Mandatory = $true)]
-        [string] $Guid
+        [string] $Guid,
+
+        [Parameter(Mandatory = $true)]
+        [string] $TargetFolder
     )
 
     Write-Host ("Processing update #{0}: {1}" -f $Count, $Guid)
@@ -540,8 +558,8 @@ function Get-UpdateDetails {
         $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
     }
     catch {
-        Write-Warning ("Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
-        return $null
+        Write-Debug ("Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
+        return [PSCustomObject]@{}
     }
 
     $detailsDoc = New-Object HtmlAgilityPack.HtmlDocument
@@ -585,12 +603,13 @@ function Get-UpdateDetails {
     }
     Write-Verbose ("URLs: {0}" -f $downloadUrls.Count)
 
-    return [pscustomobject]@{
-        Guid           = $Guid
-        Title          = $title
-        KB             = $kb
-        SupersededBy   = $supersededBy
-        DownloadUrls   = $downloadUrls
+    return [PSCustomObject]@{
+        Guid         = $Guid
+        Title        = $title
+        KB           = $kb
+        SupersededBy = $supersededBy
+        DownloadUrls = $downloadUrls
+        TargetFolder = $TargetFolder
     }
 }
 
@@ -598,63 +617,44 @@ function Build-ManifestEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [pscustomobject] $Details,
+        [PSCustomObject] $Details,
 
         [Parameter(Mandatory = $true)]
-        [pscustomobject] $DownloadInfo
+        [PSCustomObject] $DownloadInfo
     )
 
-    [pscustomobject]@{
-        Guid           = $Details.Guid
-        Title          = $Details.Title
-        DownloadUrl    = $DownloadInfo.Url
-        FileName       = $DownloadInfo.FileName
-        SupersededBy   = $Details.SupersededBy
-        Timestamp      = (Get-Date).ToString("s")
+    [PSCustomObject]@{
+        Guid         = $Details.Guid
+        Title        = $Details.Title
+        DownloadUrl  = $DownloadInfo.Url
+        FileName     = $DownloadInfo.FileName
+        SupersededBy = $Details.SupersededBy
+        Timestamp    = (Get-Date).ToString("s")
     }
 }
 
 function Invoke-KBWork {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $WinOS,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Version,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Arch,
-
-        [Parameter(Mandatory = $true)]
-        [string] $UpdatesOSCU,
-
-        [Parameter(Mandatory = $true)]
-        [string] $UpdatesNET,
-
-        [Parameter()]
-        [switch] $Clean
-    )
-
     Write-Log "Starting KB update workflow..."
 
-    # Derive SSU folder from OSCU parent
-    $rootFolder = Split-Path $UpdatesOSCU -Parent
-    if (-not $rootFolder) { $rootFolder = $UpdatesOSCU }
-    $UpdatesSSU = Join-Path $rootFolder 'UpdatesSSU'
+    $UpdatesSSU  = $paths.UpdatesSSU
+    $UpdatesOSCU = $paths.UpdatesOSCU
+    $UpdatesNET  = $paths.UpdatesNET
+    $UpdatesMISC = $paths.UpdatesMISC
+
+    $UpdatesPaths = @($UpdatesSSU, $UpdatesOSCU, $UpdatesNET, $UpdatesMISC)
 
     # Ensure folders
-    foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
+    foreach ($folder in $UpdatesPaths) {
         Ensure-Folder -Path $folder
     }
 
     # Clean mode
     if ($Clean) {
         if ($DryRun) {
-            Write-Log "[DryRun] Would clean update folders: $UpdatesOSCU, $UpdatesNET, $UpdatesSSU"
+            Write-Log "[DryRun] Would clean update folders"
         } else {
             Write-log "Cleaning update folders"
-            foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
+            foreach ($folder in $UpdatesPaths) {
                 if (Test-Path $folder) {
                     Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
                         Remove-Item -Force
@@ -665,37 +665,47 @@ function Invoke-KBWork {
     }
 
     if ($DryRun) {
-        Write-Log "[DryRun] Would fill update folders: $UpdatesOSCU, $UpdatesNET, $UpdatesSSU"
+        Write-Log "[DryRun] Would fill update folders"
         return
     }
 
     # Build queries
     $queries = @(
-        [pscustomobject]@{
-            Title = "OS Updates"
-            Query = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
+        [PSCustomObject]@{
+            Query        = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
+            FirstOnly    = $false
+            TargetFolder = $UpdatesOSCU
         }
-        [pscustomobject]@{
-            Title = ".NET Updates"
-            Query = ".NET Framework for Windows $WinOS Version $Version $Arch"
+        [PSCustomObject]@{
+            Query        = ".NET Framework for Windows $WinOS Version $Version $Arch"
+            FirstOnly    = $true
+            TargetFolder = $UpdatesNET
+        }
+        [PSCustomObject]@{
+            Query        = ".NET 8.0 $Arch Client"
+            FirstOnly    = $true
+            TargetFolder = $UpdatesNET
+        }
+        [PSCustomObject]@{
+            Query        = "Update for Windows Security platform"
+            FirstOnly    = $true
+            TargetFolder = $UpdatesMISC
         }
     )
     
     $results = @()
     foreach ($q in $queries) {
-        Write-Host ("Searching for {0}..." -f $q.Title)
-        Write-Verbose ("Query: {0}" -f $q.Query)
-
-        $results += Search-UpdateCatalogHtml -Query $q.Query
+        $results += Search-UpdateCatalogHtml -Query $q.Query -FirstOnly $q.FirstOnly -TargetFolder $q.TargetFolder
     }
 
-    $allGuids = $results | Select-Object -Unique
+    $allGuids = $results | Sort-Object Guid -Unique
     Write-Host ("Found {0} total updates to process" -f $allGuids.Count)
-    Write-Debug " GUID list:`n$($allGuids -join "`n")"
+    Write-Debug ("Guid TargetFolder:`n" + (@($allGuids | ForEach-Object { '{0} {1}' -f $_.Guid, $_.TargetFolder }) -join "`n"))
 
-    if (-not $allGuids -or $allGuids.Count -eq 0) {
+
+    if ($allGuids.Count -eq 0) {
         Write-Host "No updates found."
-        return @()
+        return
     }
 
     Write-Host "Retrieving update details..."
@@ -705,24 +715,25 @@ function Invoke-KBWork {
     foreach ($g in $allGuids) {
         $count++
         try {
-            $d = Get-UpdateDetails -Count $count -Guid $g
+            Write-Debug ("Resolving details for {0} ({1})" -f $g.Guid, $g.TargetFolder)
+            $d = Get-UpdateDetails -Count $count -Guid $g.Guid -TargetFolder $g.TargetFolder
 
             # Only include updates that are not superseded by anything else and have download URLs
             if ($d.SupersededBy.count -eq 0 -and $d.DownloadUrls -and $d.DownloadUrls.Count -gt 0) {
                 $details += $d
             }
             else {
-                Write-Verbose "Superseded or no download URLs for $g"
+                Write-Verbose "Superseded or no download URLs for {0}" -f $g.Guid
             }
         }
         catch {
-            Write-Warning ("Failed to resolve details for {0}: {1}" -f $g, $($_.Exception.Message))
+            Write-Debug ("Failed to resolve details for {0}: {1}" -f $g.Guid, $($_.Exception.Message))
         }
     }
 
     if ($details.Count -eq 0) {
         Write-Host "No usable updates after details resolution."
-        return @()
+        return
     }
     Write-Host ("Remaining applicable updates: {0}" -f $details.Count)
     Write-Debug "GUIDs:`n$($details.Guid -join "`n")"
@@ -738,7 +749,7 @@ function Invoke-KBWork {
     $requiredFiles = $requiredFiles | Select-Object -Unique
 
     # Sync: remove stale files in all folders
-    foreach ($folder in @($UpdatesOSCU, $UpdatesNET, $UpdatesSSU)) {
+    foreach ($folder in $UpdatesPaths) {
         Write-Verbose "Checking folder: $folder"
 
         $existingFiles = @()
@@ -757,18 +768,12 @@ function Invoke-KBWork {
 
     Write-Host "Downloading required update files..."
 
-    $manifestByFolder = @{
-        $UpdatesOSCU = @()
-        $UpdatesNET  = @()
-        $UpdatesSSU  = @()
-    }
-
+    $manifestByFolder = @{}
     foreach ($d in $details) {
-        $targetFolder = switch -Regex ($d.Title) {
-                'Servicing Stack Update' { $UpdatesSSU }
-                '\.NET'                  { $UpdatesNET }
-                default                  { $UpdatesOSCU }
-            }
+        $manifestByFolder[$d.TargetFolder] = @()
+    }
+    foreach ($d in $details) {
+        $targetFolder = $d.TargetFolder
 
         # Download all files for this update into the target folder
         $downloadInfos = Download-MUFile -Update $d -TargetFolder $targetFolder
@@ -802,7 +807,7 @@ function Invoke-KBWork {
 # Driver export
 # ==============================
 function Invoke-DriverWork {
-    param([string]$WinpeDriverRoot, [switch]$Clean)
+    $WinpeDriverRoot = $paths.WinpeDriverRoot
 
     if ($Clean) {
         if ($DryRun) {
@@ -833,8 +838,8 @@ function Invoke-DriverWork {
 # Registry export
 # ==============================
 function Invoke-RegWork {
-    param([string]$RegistryRoot, [switch]$Clean)
 
+    $RegistryRoot = $paths.RegistryRoot
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $RegistryRoot"
@@ -872,9 +877,8 @@ function Invoke-RegWork {
 # Install Drivers.cmd
 # ==============================
 function Write-InstallDriversScript {
-    param([string]$RootFolder, [switch]$Clean)
 
-    $path = Join-Path $RootFolder 'Install Drivers.cmd'
+    $path = Join-Path $Folder 'Install Drivers.cmd'
     $content = @'
 @echo off
 setlocal enabledelayedexpansion
@@ -926,8 +930,7 @@ exit /b %ERRORLEVEL%
 # SetupComplete.cmd
 # ==============================
 function Write-SetupCompleteScript {
-    param([string]$ScriptsRoot, [switch]$Clean)
-
+    $ScriptsRoot = $paths.ScriptsRoot
     $path = Join-Path $ScriptsRoot 'SetupComplete.cmd'
     $content = @'
 @echo off
@@ -1003,10 +1006,8 @@ exit /b 0
 # SetupConfig files
 # ==============================
 function Write-SetupConfigFiles {
-    param([string]$RootFolder, [switch]$Clean)
-
-    $cleanPath   = Join-Path $RootFolder 'SetupConfig-Clean.ini'
-    $upgradePath = Join-Path $RootFolder 'SetupConfig-Upgrade.ini'
+    $cleanPath   = Join-Path $Folder 'SetupConfig-Clean.ini'
+    $upgradePath = Join-Path $Folder 'SetupConfig-Upgrade.ini'
 
     $cleanini = @'
 [SetupConfig]
@@ -1049,13 +1050,11 @@ Telemetry=Disable
 # Setup CMD Files
 # ==============================
 function Write-SetupCmdFiles {
-    param([string]$RootFolder, [switch]$Clean)
-
     $cleanName   = 'Clean install.cmd'
     $upgradeName = 'Upgrade.cmd'
 
-    $cleanPath   = Join-Path $RootFolder $cleanName
-    $upgradePath = Join-Path $RootFolder $upgradeName
+    $cleanPath   = Join-Path $Folder $cleanName
+    $upgradePath = Join-Path $Folder $upgradeName
 
     $cleanTemplate = @'
 @echo off
@@ -1219,14 +1218,15 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 # ==============================
 # Core paths
 # ==============================
-$paths = [ordered]@{
-    UpdatesRoot     = Join-Path $Folder 'Updates'
-    UpdatesOSCU     = Join-Path $Folder 'Updates\OSCU'
-    UpdatesNET      = Join-Path $Folder 'Updates\NET'
-    WinpeDriverRoot = Join-Path $Folder '$WinpeDriver$'
-    RegistryRoot    = Join-Path $Folder 'Registry'
-    ScriptsRoot     = Join-Path $Folder 'Sources\$OEM$\$$\Setup\Scripts'
-}
+$paths = [ordered]@{}
+$paths.UpdatesRoot     = Join-Path $Folder $names.Updates
+$paths.UpdatesSSU      = Join-Path $paths.UpdatesRoot $names.SSU
+$paths.UpdatesOSCU     = Join-Path $paths.UpdatesRoot $names.OSCU
+$paths.UpdatesNET      = Join-Path $paths.UpdatesRoot $names.NET
+$paths.UpdatesMISC     = Join-Path $paths.UpdatesRoot $names.MISC
+$paths.WinpeDriverRoot = Join-Path $Folder $names.WinpeDriver
+$paths.RegistryRoot    = Join-Path $Folder $names.Registry
+$paths.ScriptsRoot     = Join-Path $Folder $names
 
 if (-not $Clean -and -not $DryRun) {
     foreach ($p in $paths.Values) {
@@ -1240,26 +1240,16 @@ if (-not $Clean -and -not $DryRun) {
 # ==============================
 # Main orchestration
 # ==============================
-if ($KB) {
-    Invoke-KBWork -WinOS $WinOS -Version $Version -Arch $Arch `
-        -UpdatesOSCU $paths.UpdatesOSCU -UpdatesNET $paths.UpdatesNET `
-        -Clean:$Clean
-}
-
-if ($Drivers) {
-    Invoke-DriverWork -WinpeDriverRoot $paths.WinpeDriverRoot -Clean:$Clean
-}
-
-if ($Reg) {
-    Invoke-RegWork -RegistryRoot $paths.RegistryRoot -Clean:$Clean
-}
+if ($KB) { Invoke-KBWork }
+if ($Drivers) { Invoke-DriverWork }
+if ($Reg) { Invoke-RegWork }
 
 if ($Files) {
     Write-Log "Scripts and config files..."
-    Write-InstallDriversScript -RootFolder $Folder -Clean:$Clean
-    Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot -Clean:$Clean
-    Write-SetupConfigFiles -RootFolder $Folder -Clean:$Clean
-    Write-SetupCmdFiles -RootFolder $Folder -Clean:$Clean
+    Write-InstallDriversScript
+    Write-SetupCompleteScript
+    Write-SetupConfigFiles
+    Write-SetupCmdFiles
 }
 
 Write-Log "Completed."
