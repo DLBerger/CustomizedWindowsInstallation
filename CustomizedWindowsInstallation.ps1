@@ -15,6 +15,9 @@ It supports:
     - SetupComplete.cmd
     - SetupConfig-Clean.ini
     - SetupConfig-Upgrade.ini
+    - Upgrade.cmd
+    - Clean install.cmd
+
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
 
@@ -102,7 +105,7 @@ param(
 )
 
 # git hash
-$GitHash = "cc27a1e"
+$GitHash = "8b54e5c"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -879,7 +882,19 @@ setlocal enabledelayedexpansion
 set LOG=%SystemRoot%\Temp\InstallDrivers.log
 echo [%DATE% %TIME%] Starting driver installation... > "%LOG%"
 
-set DRIVERROOT=%~dp0$WinpeDriver$
+REM Detect USB or local base folder
+set BASE=%~dp0
+
+for %%D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist "%%D:\$WinpeDriver$" (
+        set BASE=%%D:\
+        goto foundusb
+    )
+)
+:foundusb
+
+set DRIVERROOT=%BASE%$WinpeDriver$
+
 if not exist "%DRIVERROOT%" (
     echo $WinpeDriver$ folder not found at "%DRIVERROOT%". >> "%LOG%"
     exit /b 0
@@ -921,26 +936,41 @@ setlocal enabledelayedexpansion
 set LOG=%SystemRoot%\Setup\Scripts\SetupComplete.log
 echo [%DATE% %TIME%] SetupComplete starting... > "%LOG%"
 
-set BASE=%~dp0
+REM Detect USB drive containing update payload
+set USB=
+for %%D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
+    if exist "%%D:\Updates\OSCU" (
+        set USB=%%D:
+        goto foundusb
+    )
+)
+:foundusb
 
-:: Apply .NET updates
-for %%F in ("%BASE%..\..\..\Updates\NET\*.msu") do (
+if "%USB%"=="" (
+    echo No USB update source found. >> "%LOG%"
+    exit /b 0
+)
+
+echo Using USB source at %USB% >> "%LOG%"
+
+REM Apply .NET updates
+for %%F in ("%USB%\Updates\NET\*.msu") do (
     wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
 )
 
-:: Apply OS updates
-for %%F in ("%BASE%..\..\..\Updates\OSCU\*.msu") do (
+REM Apply OS updates
+for %%F in ("%USB%\Updates\OSCU\*.msu") do (
     wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
 )
 
-:: Import registry
-for %%F in ("%BASE%..\..\..\Registry\*.reg") do (
+REM Import registry files
+for %%F in ("%USB%\Registry\*.reg") do (
     reg.exe import "%%F" >> "%LOG%" 2>&1
 )
 
-:: Install drivers
-if exist "%SystemDrive%\Install Drivers.cmd" (
-    call "%SystemDrive%\Install Drivers.cmd" >> "%LOG%" 2>&1
+REM Install drivers
+if exist "%USB%\Install Drivers.cmd" (
+    call "%USB%\Install Drivers.cmd" >> "%LOG%" 2>&1
 )
 
 echo [%DATE% %TIME%] SetupComplete finished. >> "%LOG%"
@@ -967,6 +997,7 @@ exit /b 0
         Set-Content -LiteralPath $path -Value $content -Encoding ASCII
     }
 }
+
 
 # ==============================
 # SetupConfig files
@@ -1014,7 +1045,67 @@ Telemetry=Disable
         Set-Content -LiteralPath $upgradePath -Value $upgradeini -Encoding ASCII
     }
 }
+# ==============================
+# Setup CMD Files
+# ==============================
+function Write-SetupCmdFiles {
+    param([string]$RootFolder, [switch]$Clean)
 
+    $cleanName   = 'Clean install.cmd'
+    $upgradeName = 'Upgrade.cmd'
+
+    $cleanPath   = Join-Path $RootFolder $cleanName
+    $upgradePath = Join-Path $RootFolder $upgradeName
+
+    $cleanTemplate = @'
+@echo off
+setlocal
+set "SRC=%~dp0"
+echo WARNING: This will start a CLEAN install (wipe-and-load) when run from within Windows.
+echo Close all apps and ensure you have backups.
+echo.
+"%SRC%setup.exe" /auto clean /eula accept /configfile "%SRC%{0}"
+endlocal
+'@
+
+    $upgradeTemplate = @'
+@echo off
+setlocal
+set "SRC=%~dp0"
+echo Running in-place upgrade from: %SRC%
+"%SRC%setup.exe" /auto upgrade /eula accept /configfile "%SRC%{0}"
+echo.
+echo If Setup exits immediately, check setup logs under C:\$WINDOWS.~BT\Sources\Panther
+endlocal
+'@
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $cleanPath"
+            Write-Log "[DryRun] Would remove: $upgradePath"
+        } else {
+            Write-Log "Removing: $cleanPath"
+            if (Test-Path $cleanPath) { Remove-Item $cleanPath -Force }
+            Write-Log "Removing: $upgradePath"
+            if (Test-Path $upgradePath) { Remove-Item $upgradePath -Force }
+        }
+        return
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $cleanPath"
+        Write-Log "[DryRun] Would write: $upgradePath"
+    } else {
+        # Fill in the actual name for the files in the template
+        $cleanContent   = $cleanTemplate -f $cleanName
+        $upgradeContent = $upgradeTemplate -f $upgradeName
+
+        Write-Log "Writing: $cleanPath"
+        Set-Content -LiteralPath $cleanPath   -Value $cleanContent   -Encoding ASCII
+        Write-Log "Writing: $upgradePath"
+        Set-Content -LiteralPath $upgradePath -Value $upgradeContent -Encoding ASCII
+    }
+}
 # Real work starts here
 
 # Apply defaults
@@ -1026,63 +1117,6 @@ if (-not $Version) {
     if ($WinOS -eq '10') { $Version = '22H2' }
     else                 { $Version = '25H2' }
 }
-
-# --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
-$hapDll = Join-Path $PSScriptRoot "HtmlAgilityPack.dll"
-
-if (-not (Test-Path $hapDll)) {
-    Write-Host "HtmlAgilityPack.dll not found; downloading..." -ForegroundColor Cyan
-
-    $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
-    $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
-    $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
-
-    # Clean old extraction folder if it exists
-    if (Test-Path $extractDir) {
-        Remove-Item $extractDir -Recurse -Force
-    }
-
-    # --- Download using .NET WebClient (PS 5.x safe) ---
-    Write-Verbose "Downloading via WebClient..."
-    $wc = New-Object System.Net.WebClient
-    $wc.DownloadFile($nugetUrl, $tmpNupkg)
-
-    # --- Extract using .NET ZipFile (PS 5.x safe) ---
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
-
-    # Prefer netstandard2.0, fallback to net45
-    $candidatePaths = @(
-        (Join-Path $extractDir "lib\netstandard2.0\HtmlAgilityPack.dll"),
-        (Join-Path $extractDir "lib\net45\HtmlAgilityPack.dll")
-    )
-
-    $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $sourceDll) {
-        throw "HtmlAgilityPack.dll not found inside NuGet package."
-    }
-
-    Copy-Item -Path $sourceDll -Destination $hapDll -Force
-    Write-Verbose "HtmlAgilityPack.dll copied to: $hapDll"
-
-    # Cleanup: remove extraction folder + nupkg
-    Remove-Item $extractDir -Recurse -Force
-    Remove-Item $tmpNupkg -Force
-}
-
-# --- Load the DLL (PS 5.x safe) ---
-$hapLoaded = $false
-try {
-    [void][HtmlAgilityPack.HtmlDocument]
-    $hapLoaded = $true
-} catch {}
-
-if (-not $hapLoaded) {
-    Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
-    Add-Type -Path $hapDll
-    Write-Debug "HtmlAgilityPack successfully loaded."
-}
-# ---------------------------------------------------------------------------
 
 # ==============================
 # Resolve working folder
@@ -1114,6 +1148,74 @@ Write-Log "Mode          : $($workSwitches -join ', ')"
 if ($Clean)  { Write-Log "Clean mode    : Enabled" "WARN" }
 if ($DryRun) { Write-Log "Dry-run mode  : Enabled" "WARN" }
 
+if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
+    # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
+    $hapDll = Join-Path $PSScriptRoot "HtmlAgilityPack.dll"
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $hapDll"
+        } else {
+            Write-Log "Removing: $hapDLL"
+            if (Test-Path $hapDLL) { Remove-Item $hapDLL -Force }
+        }
+    }
+
+    if (-not (Test-Path $hapDll)) {
+        Write-Log "HtmlAgilityPack.dll not found - downloading..."
+
+        $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
+        $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
+        $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
+
+        # Clean old extraction folder if it exists
+        if (Test-Path $extractDir) {
+            Remove-Item $extractDir -Recurse -Force
+        }
+
+        # --- Download using .NET WebClient (PS 5.x safe) ---
+        Write-Verbose "Downloading via WebClient..."
+        $wc = New-Object System.Net.WebClient
+        $wc.DownloadFile($nugetUrl, $tmpNupkg)
+
+        # --- Extract using .NET ZipFile (PS 5.x safe) ---
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
+
+        # Prefer netstandard2.0, fallback to net45
+        $candidatePaths = @(
+            (Join-Path $extractDir "lib\netstandard2.0\HtmlAgilityPack.dll"),
+            (Join-Path $extractDir "lib\net45\HtmlAgilityPack.dll")
+        )
+
+        $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $sourceDll) {
+            throw "HtmlAgilityPack.dll not found inside NuGet package."
+        }
+
+        Copy-Item -Path $sourceDll -Destination $hapDll -Force
+        Write-Verbose "HtmlAgilityPack.dll copied to: $hapDll"
+
+        # Cleanup: remove extraction folder + nupkg
+        Remove-Item $extractDir -Recurse -Force
+        Remove-Item $tmpNupkg -Force
+    }
+
+    # --- Load the DLL (PS 5.x safe) ---
+    $hapLoaded = $false
+    try {
+        [void][HtmlAgilityPack.HtmlDocument]
+        $hapLoaded = $true
+    } catch {}
+
+    if (-not $hapLoaded) {
+        Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
+        Add-Type -Path $hapDll
+        Write-Debug "HtmlAgilityPack successfully loaded."
+    }
+}
+
+
 # ==============================
 # Core paths
 # ==============================
@@ -1123,7 +1225,7 @@ $paths = [ordered]@{
     UpdatesNET      = Join-Path $Folder 'Updates\NET'
     WinpeDriverRoot = Join-Path $Folder '$WinpeDriver$'
     RegistryRoot    = Join-Path $Folder 'Registry'
-    ScriptsRoot     = Join-Path $Folder 'Scripts'
+    ScriptsRoot     = Join-Path $Folder 'Sources\$OEM$\$$\Setup\Scripts'
 }
 
 if (-not $Clean -and -not $DryRun) {
@@ -1157,6 +1259,7 @@ if ($Files) {
     Write-InstallDriversScript -RootFolder $Folder -Clean:$Clean
     Write-SetupCompleteScript -ScriptsRoot $paths.ScriptsRoot -Clean:$Clean
     Write-SetupConfigFiles -RootFolder $Folder -Clean:$Clean
+    Write-SetupCmdFiles -RootFolder $Folder -Clean:$Clean
 }
 
 Write-Log "Completed."
