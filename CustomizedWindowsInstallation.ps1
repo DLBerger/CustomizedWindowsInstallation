@@ -104,7 +104,7 @@ param(
 )
 
 # git hash
-$GitHash = "891e36b"
+$GitHash = "ad88fc8"
 
 # ==============================
 # Core names
@@ -114,6 +114,7 @@ $names = [ordered]@{
     WinpeDriver           = '$WinpeDriver$'
     Registry              = 'Registry'
     Sources               = 'sources'
+    TempOnOOBE            = '%SystemRoot%\Temp'
     ScriptsOnOOBE         = '%SystemRoot%\Setup\Scripts'
     InstallDriversCmd     = 'InstallDrivers.cmd'
     InstallDriversLog     = 'InstallDrivers.log'
@@ -887,7 +888,7 @@ function Write-InstallDriversScript {
 @echo off
 setlocal enabledelayedexpansion
 
-set LOG=%SystemRoot%\Temp\{0}
+set LOG={0}
 echo [%DATE% %TIME%] Starting driver installation... > "%LOG%"
 
 :: Detect USB or local base folder
@@ -927,7 +928,7 @@ exit /b %ERRORLEVEL%
         Write-Log "[DryRun] Would write: $path"
     } else {
         Write-Log "Writing: $path"
-        $content = $template -f $names.InstallDriversLog, $names.WinpeDriver
+        $content = $template -f $paths.InstallDriversLog, $names.WinpeDriver
         Set-Content -LiteralPath $path -Value $content -Encoding ASCII
     }
 }
@@ -1246,7 +1247,7 @@ $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $Folder $names.Registry
 $paths.SourcesRoot           = Join-Path $Folder $names.Sources
 $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
-$paths.InstallDriversLog     = Join-Path $Folder $names.InstallDriversLog
+$paths.InstallDriversLog     = Join-Path $names.TempOnOOBE $names.InstallDriversLog
 $paths.SetupCompleteCmd      = Join-Path (Join-Path $Folder $names.ScriptsInFolder) $names.SetupCompleteCmd
 $paths.SetupCompleteLog      = Join-Path $names.ScriptsOnOOBE $names.SetupCompleteLog
 $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
