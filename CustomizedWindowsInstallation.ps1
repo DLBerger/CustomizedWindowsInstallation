@@ -104,7 +104,7 @@ param(
 )
 
 # git hash
-$GitHash = "857f317"
+$GitHash = "a160395"
 
 # ==============================
 # Core names
@@ -1051,17 +1051,45 @@ function Write-SetupConfigFiles {
     $upgradePath = $paths.SetupConfigUpgradeIni
 
     $cleanTemplate = @'
+# Clean installation configuration
 [SetupConfig]
+
+# Perform a clean installation
 Auto=Clean
-DynamicUpdate=Enable
+
+# Disable Dynamic Update (no online updates or drivers)
+DynamicUpdate=Disable
+
+# Prevent Setup from injecting drivers automatically
+InstallDrivers=Off
+
+# Show the full Out-of-Box Experience (OOBE)
+ShowOOBE=Full
+
+# Disable Setup telemetry
 Telemetry=Disable
+
 '@
 
     $upgradeTemplate = @'
+# Upgrade installation configuration
 [SetupConfig]
+
+# Perform an in-place upgrade
 Auto=Upgrade
-DynamicUpdate=Enable
+
+# Disable Dynamic Update (no online updates or drivers)
+DynamicUpdate=Disable
+
+# Prevent Setup from injecting drivers automatically
+InstallDrivers=Off
+
+# Do not show the Out-of-Box Experience (OOBE)
+ShowOOBE=None
+
+# Disable Setup telemetry
 Telemetry=Disable
+
 '@
 
     if ($Clean) {
