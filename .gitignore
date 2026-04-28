@@ -3,3 +3,7 @@ Install Drivers.cmd
 SetupConfig-Clean.ini
 SetupConfig-Upgrade.ini
 HtmlAgilityPack.dll
+Clean install.cmd
+Sources
+Updates
+Upgrade.cmd
