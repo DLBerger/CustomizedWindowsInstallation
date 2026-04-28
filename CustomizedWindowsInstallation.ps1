@@ -104,7 +104,7 @@ param(
 )
 
 # git hash
-$GitHash = "1ff97d4"
+$GitHash = "891e36b"
 
 # ==============================
 # Core names
@@ -825,16 +825,13 @@ function Invoke-DriverWork {
         return
     }
 
-    if (-not $DryRun -and -not (Test-Path $WinpeDriverRoot)) {
-        New-Item -ItemType Directory -Path $WinpeDriverRoot -Force | Out-Null
-    }
-
     if ($DryRun) {
         Write-Log "[DryRun] Would run: DISM /export-driver"
         return
     }
 
     Write-Log "Exporting drivers..."
+    Ensure-Folder -Path $WinpeDriverRoot
     $args = "/online /export-driver /destination:`"$WinpeDriverRoot`""
     $p = Start-Process -FilePath dism.exe -ArgumentList $args -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$WinpeDriverRoot\dism.log"
     if ($p.ExitCode -ne 0) { throw "DISM failed." }
@@ -856,12 +853,9 @@ function Invoke-RegWork {
         return
     }
 
-    if (-not $DryRun -and -not (Test-Path $RegistryRoot)) {
-        New-Item -ItemType Directory -Path $RegistryRoot -Force | Out-Null
-    }
-
     if (-not $DryRun) {
         Write-Log "Exporting Registry keys..."
+        Ensure-Folder -Path $RegistryRoot
     }
 
     $keys = @(
@@ -986,8 +980,16 @@ exit /b 0
 '@
 
     $osTemplate = @'
+:: Install MSU files
 for %%F in ("%USB%\{0}\{1}\*.msu") do (
+    echo Installing MSU %%F >> "%LOG%"
     wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
+:: Install CAB files
+for %%F in ("%USB%\{0}\{1}\*.cab") do (
+    echo Installing CAB %%F >> "%LOG%"
+    dism.exe /online /add-package /packagepath:"%%F" /quiet /norestart >> "%LOG%" 2>&1
 )
 
 '@
@@ -1006,8 +1008,10 @@ for %%F in ("%USB%\{0}\{1}\*.msu") do (
         Write-Log "[DryRun] Would write: $path"
     } else {
         Write-Log "Writing: $path"
+        Ensure-Folder (Split-Path $path -Parent)
+
         $osContent = ""
-        foreach ($u in @('SSU', 'OSCU', 'NET', 'MISC')) {
+        foreach ($u in $updateDirs) {
             $osContent += $osTemplate -f $names.Updates, $names.$u
         }
         $content = $template -f $paths.SetupCompleteLog, $names.Updates, $osContent, $names.Registry, $names.InstallDriversCmd
