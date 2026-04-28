@@ -11,13 +11,12 @@ It supports:
 - Exporting all third-party drivers from the current system into $WinpeDriver$.
 - Exporting registry keys into .reg files.
 - Generating:
-    - Install Drivers.cmd
+    - InstallDrivers.cmd
     - SetupComplete.cmd
     - SetupConfig-Clean.ini
     - SetupConfig-Upgrade.ini
     - Upgrade.cmd
-    - Clean install.cmd
-
+    - CleanInstall.cmd
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
 
@@ -50,7 +49,7 @@ Export drivers into $WinpeDriver$.
 Export registry keys.
 
 .PARAMETER Files
-Generate Install Drivers.cmd, SetupComplete.cmd, and SetupConfig-*.ini files.
+Generate SetupComplete.cmd, SetupConfig-*.ini, and additional .cmd files.
 
 .PARAMETER All
 Shorthand for -KB -Drivers -Reg -Files and the default if no specific switch is provided.
@@ -105,20 +104,28 @@ param(
 )
 
 # git hash
-$GitHash = "09b40dd"
+$GitHash = "d75bc5e"
 
 # ==============================
 # Core names
 # ==============================
 $names = [ordered]@{
-    Updates     = 'Updates'
-    SSU         = 'SSU'
-    OSCU        = 'OSCU'
-    NET         = 'NET'
-    MISC        = 'MISC'
-    WinpeDriver = '$WinpeDriver$'
-    Registry    = 'Registry'
-    Scripts     = 'sources\$OEM$\$$\Setup\Scripts'
+    Updates               = 'Updates'
+    SSU                   = 'SSU'
+    OSCU                  = 'OSCU'
+    NET                   = 'NET'
+    MISC                  = 'MISC'
+    WinpeDriver           = '$WinpeDriver$'
+    Registry              = 'Registry'
+    Scripts               = 'sources\$OEM$\$$\Setup\Scripts'
+    InstallDriversCmd     = 'InstallDrivers.cmd'
+    InstallDriversLog     = 'InstallDrivers.log'
+    SetupCompleteCmd      = 'SetupComplete.cmd'
+    SetupCompleteLog      = 'SetupComplete.log'
+    SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
+    SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
+    CleanInstallCmd       = 'CleanInstall.cmd'
+    UpgradeCmd            = 'Upgrade.cmd'
 }
 
 if ($Help) {
@@ -144,7 +151,6 @@ function Write-Log {
     $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Write-Host "[$ts] [$Level] $Message"
 }
-
 
 # =========================
 # HTML-based Update Catalog search
@@ -878,29 +884,30 @@ function Invoke-RegWork {
 # ==============================
 function Write-InstallDriversScript {
 
-    $path = Join-Path $Folder 'Install Drivers.cmd'
-    $content = @'
+    $path = $paths.InstallDriversCmd
+
+    $template = @'
 @echo off
 setlocal enabledelayedexpansion
 
-set LOG=%SystemRoot%\Temp\InstallDrivers.log
+set LOG=%SystemRoot%\Temp\{0}
 echo [%DATE% %TIME%] Starting driver installation... > "%LOG%"
 
-REM Detect USB or local base folder
+:: Detect USB or local base folder
 set BASE=%~dp0
 
 for %%D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist "%%D:\$WinpeDriver$" (
+    if exist "%%D:\{1}" (
         set BASE=%%D:\
         goto foundusb
     )
 )
 :foundusb
 
-set DRIVERROOT=%BASE%$WinpeDriver$
+set DRIVERROOT=%BASE%{1}
 
 if not exist "%DRIVERROOT%" (
-    echo $WinpeDriver$ folder not found at "%DRIVERROOT%". >> "%LOG%"
+    echo {1} folder not found at "%DRIVERROOT%". >> "%LOG%"
     exit /b 0
 )
 
@@ -922,6 +929,8 @@ exit /b %ERRORLEVEL%
     if ($DryRun) {
         Write-Log "[DryRun] Would write: $path"
     } else {
+        Write-Log "Writing: $path"
+        $content = $template -f $names.InstallDriversLog, $names.WinpeDriver
         Set-Content -LiteralPath $path -Value $content -Encoding ASCII
     }
 }
@@ -930,19 +939,19 @@ exit /b %ERRORLEVEL%
 # SetupComplete.cmd
 # ==============================
 function Write-SetupCompleteScript {
-    $ScriptsRoot = $paths.ScriptsRoot
-    $path = Join-Path $ScriptsRoot 'SetupComplete.cmd'
-    $content = @'
+    $path = $paths.SetupCompleteCmd
+
+    $template = @'
 @echo off
 setlocal enabledelayedexpansion
 
-set LOG=%SystemRoot%\Setup\Scripts\SetupComplete.log
+set LOG={0}
 echo [%DATE% %TIME%] SetupComplete starting... > "%LOG%"
 
-REM Detect USB drive containing update payload
+:: Detect USB drive containing update payload
 set USB=
 for %%D in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist "%%D:\Updates\OSCU" (
+    if exist "%%D:\{1}" (
         set USB=%%D:
         goto foundusb
     )
@@ -956,28 +965,27 @@ if "%USB%"=="" (
 
 echo Using USB source at %USB% >> "%LOG%"
 
-REM Apply .NET updates
-for %%F in ("%USB%\Updates\NET\*.msu") do (
-    wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
-)
-
-REM Apply OS updates
-for %%F in ("%USB%\Updates\OSCU\*.msu") do (
-    wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
-)
-
-REM Import registry files
-for %%F in ("%USB%\Registry\*.reg") do (
+:: Apply Updates in the correct order
+{2}
+:: Import registry files
+for %%F in ("%USB%\{3}\*.reg") do (
     reg.exe import "%%F" >> "%LOG%" 2>&1
 )
 
-REM Install drivers
-if exist "%USB%\Install Drivers.cmd" (
-    call "%USB%\Install Drivers.cmd" >> "%LOG%" 2>&1
+:: Install drivers
+if exist "%USB%\{4}" (
+    call "%USB%\{4}" >> "%LOG%" 2>&1
 )
 
 echo [%DATE% %TIME%] SetupComplete finished. >> "%LOG%"
 exit /b 0
+'@
+
+    $osTemplate = @'
+for %%F in ("%USB%\{0}\{1}\*.msu") do (
+    wusa.exe "%%F" /quiet /norestart >> "%LOG%" 2>&1
+)
+
 '@
 
     if ($Clean) {
@@ -994,29 +1002,30 @@ exit /b 0
         Write-Log "[DryRun] Would write: $path"
     } else {
         Write-Log "Writing: $path"
-        if (-not (Test-Path $ScriptsRoot)) {
-            New-Item -ItemType Directory -Path $ScriptsRoot -Force | Out-Null
+        $osContent = ""
+        foreach ($u in @('SSU', 'OSCU', 'NET', 'MISC')) {
+            $osContent += $osTemplate -f $names.Updates, $names.$u
         }
+        $content = $template -f $paths.SetupCompleteLog, $names.Updates, $osContent, $names.Registry, $names.InstallDriversCmd
         Set-Content -LiteralPath $path -Value $content -Encoding ASCII
     }
 }
-
 
 # ==============================
 # SetupConfig files
 # ==============================
 function Write-SetupConfigFiles {
-    $cleanPath   = Join-Path $Folder 'SetupConfig-Clean.ini'
-    $upgradePath = Join-Path $Folder 'SetupConfig-Upgrade.ini'
+    $cleanPath   = $paths.SetupConfigCleanIni
+    $upgradePath = $paths.SetupConfigUpgradeIni
 
-    $cleanini = @'
+    $cleanTemplate = @'
 [SetupConfig]
 Auto=Clean
 DynamicUpdate=Enable
 Telemetry=Disable
 '@
 
-    $upgradeini = @'
+    $upgradeTemplate = @'
 [SetupConfig]
 Auto=Upgrade
 DynamicUpdate=Enable
@@ -1041,20 +1050,17 @@ Telemetry=Disable
         Write-Log "[DryRun] Would write: $upgradePath"
     } else {
         Write-Log "Writing: $cleanPath"
-        Set-Content -LiteralPath $cleanPath   -Value $cleanini   -Encoding ASCII
+        Set-Content -LiteralPath $cleanPath   -Value $cleanTemplate   -Encoding ASCII
         Write-Log "Writing: $upgradePath"
-        Set-Content -LiteralPath $upgradePath -Value $upgradeini -Encoding ASCII
+        Set-Content -LiteralPath $upgradePath -Value $upgradeTemplate -Encoding ASCII
     }
 }
 # ==============================
 # Setup CMD Files
 # ==============================
 function Write-SetupCmdFiles {
-    $cleanName   = 'Clean install.cmd'
-    $upgradeName = 'Upgrade.cmd'
-
-    $cleanPath   = Join-Path $Folder $cleanName
-    $upgradePath = Join-Path $Folder $upgradeName
+    $cleanPath   = $paths.CleanInstallCmd
+    $upgradePath = $paths.UpgradeCmd
 
     $cleanTemplate = @'
 @echo off
@@ -1096,8 +1102,8 @@ endlocal
         Write-Log "[DryRun] Would write: $upgradePath"
     } else {
         # Fill in the actual name for the files in the template
-        $cleanContent   = $cleanTemplate -f $cleanName
-        $upgradeContent = $upgradeTemplate -f $upgradeName
+        $cleanContent   = $cleanTemplate -f $names.SetupConfigCleanIni
+        $upgradeContent = $upgradeTemplate -f $names.SetupConfigUpgradeIni
 
         Write-Log "Writing: $cleanPath"
         Set-Content -LiteralPath $cleanPath   -Value $cleanContent   -Encoding ASCII
@@ -1219,14 +1225,21 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 # Core paths
 # ==============================
 $paths = [ordered]@{}
-$paths.UpdatesRoot     = Join-Path $Folder $names.Updates
-$paths.UpdatesSSU      = Join-Path $paths.UpdatesRoot $names.SSU
-$paths.UpdatesOSCU     = Join-Path $paths.UpdatesRoot $names.OSCU
-$paths.UpdatesNET      = Join-Path $paths.UpdatesRoot $names.NET
-$paths.UpdatesMISC     = Join-Path $paths.UpdatesRoot $names.MISC
-$paths.WinpeDriverRoot = Join-Path $Folder $names.WinpeDriver
-$paths.RegistryRoot    = Join-Path $Folder $names.Registry
-$paths.ScriptsRoot     = Join-Path $Folder $names
+$paths.UpdatesRoot           = Join-Path $Folder $names.Updates
+$paths.UpdatesSSU            = Join-Path $paths.UpdatesRoot $names.SSU
+$paths.UpdatesOSCU           = Join-Path $paths.UpdatesRoot $names.OSCU
+$paths.UpdatesNET            = Join-Path $paths.UpdatesRoot $names.NET
+$paths.UpdatesMISC           = Join-Path $paths.UpdatesRoot $names.MISC
+$paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
+$paths.RegistryRoot          = Join-Path $Folder $names.Registry
+$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
+$paths.InstallDriversLog     = Join-Path $Folder $names.InstallDriversLog
+$paths.SetupCompleteCmd      = Join-Path $Folder $names.SetupCompleteCmd
+$paths.SetupCompleteLog      = Join-Path "%SystemRoot%\Setup\Scripts" $names.SetupCompleteLog
+$paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
+$paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
+$paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
+$paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
 
 if (-not $Clean -and -not $DryRun) {
     foreach ($p in $paths.Values) {
