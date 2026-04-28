@@ -104,20 +104,17 @@ param(
 )
 
 # git hash
-$GitHash = "d75bc5e"
+$GitHash = "1ff97d4"
 
 # ==============================
 # Core names
 # ==============================
 $names = [ordered]@{
     Updates               = 'Updates'
-    SSU                   = 'SSU'
-    OSCU                  = 'OSCU'
-    NET                   = 'NET'
-    MISC                  = 'MISC'
     WinpeDriver           = '$WinpeDriver$'
     Registry              = 'Registry'
-    Scripts               = 'sources\$OEM$\$$\Setup\Scripts'
+    Sources               = 'sources'
+    ScriptsOnOOBE         = '%SystemRoot%\Setup\Scripts'
     InstallDriversCmd     = 'InstallDrivers.cmd'
     InstallDriversLog     = 'InstallDrivers.log'
     SetupCompleteCmd      = 'SetupComplete.cmd'
@@ -126,6 +123,12 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
+}
+$names.ScriptsInFolder    = Join-Path $names.Sources '$OEM$\$$\Setup\Scripts'
+
+$updateDirs = @('SSU', 'OSCU', 'NET', 'MISC')
+foreach ($u in $updateDirs) {
+    $names[$u] = $u
 }
 
 if ($Help) {
@@ -640,39 +643,36 @@ function Build-ManifestEntry {
 }
 
 function Invoke-KBWork {
-    Write-Log "Starting KB update workflow..."
-
-    $UpdatesSSU  = $paths.UpdatesSSU
-    $UpdatesOSCU = $paths.UpdatesOSCU
-    $UpdatesNET  = $paths.UpdatesNET
-    $UpdatesMISC = $paths.UpdatesMISC
-
-    $UpdatesPaths = @($UpdatesSSU, $UpdatesOSCU, $UpdatesNET, $UpdatesMISC)
-
-    # Ensure folders
-    foreach ($folder in $UpdatesPaths) {
-        Ensure-Folder -Path $folder
-    }
+    $path = $paths.UpdatesRoot
 
     # Clean mode
     if ($Clean) {
         if ($DryRun) {
-            Write-Log "[DryRun] Would clean update folders"
-        } else {
-            Write-log "Cleaning update folders"
-            foreach ($folder in $UpdatesPaths) {
-                if (Test-Path $folder) {
-                    Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
-                        Remove-Item -Force
-                }
-            }
+            Write-Log "[DryRun] Would clean $path"
+        } elseif (Test-Path $path) {
+            Write-log "Removing: $path"
+            Remove-Item $path -Recurse -Force
         }
         return
     }
 
     if ($DryRun) {
-        Write-Log "[DryRun] Would fill update folders"
+        foreach ($u in $updateDirs) {
+            Write-Log ("[DryRun] Would fill: {0}" -f $paths["Updates$u"])
+        }
         return
+    }
+
+    Write-Log "Starting KB update workflow..."
+
+    # Ensure folders exist
+    $UpdatesPaths = @()
+    foreach ($u in $updateDirs) {
+        $UpdatesPaths += $paths["Updates$u"]
+    }
+
+    foreach ($folder in $UpdatesPaths) {
+        Ensure-Folder -Path $folder
     }
 
     # Build queries
@@ -680,22 +680,22 @@ function Invoke-KBWork {
         [PSCustomObject]@{
             Query        = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
             FirstOnly    = $false
-            TargetFolder = $UpdatesOSCU
+            TargetFolder = $paths.UpdatesOSCU
         }
         [PSCustomObject]@{
             Query        = ".NET Framework for Windows $WinOS Version $Version $Arch"
             FirstOnly    = $true
-            TargetFolder = $UpdatesNET
+            TargetFolder = $paths.UpdatesNET
         }
         [PSCustomObject]@{
             Query        = ".NET 8.0 $Arch Client"
             FirstOnly    = $true
-            TargetFolder = $UpdatesNET
+            TargetFolder = $paths.UpdatesNET
         }
         [PSCustomObject]@{
             Query        = "Update for Windows Security platform"
             FirstOnly    = $true
-            TargetFolder = $UpdatesMISC
+            TargetFolder = $paths.UpdatesMISC
         }
     )
     
@@ -818,9 +818,9 @@ function Invoke-DriverWork {
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $WinpeDriverRoot"
-        } else {
+        } elseif (Test-Path $WinpeDriverRoot) {
             Write-Log "Removing: $WinpeDriverRoot"
-            if (Test-Path $WinpeDriverRoot) { Remove-Item $WinpeDriverRoot -Recurse -Force }
+            Remove-Item $WinpeDriverRoot -Recurse -Force
         }
         return
     }
@@ -830,7 +830,7 @@ function Invoke-DriverWork {
     }
 
     if ($DryRun) {
-        Write-Log "[DryRun] Would run DISM export-driver"
+        Write-Log "[DryRun] Would run: DISM /export-driver"
         return
     }
 
@@ -849,9 +849,9 @@ function Invoke-RegWork {
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $RegistryRoot"
-        } else {
+        } elseif (Test-Path $RegistryRoot) {
             Write-Log "Removing: $RegistryRoot"
-            if (Test-Path $RegistryRoot) { Remove-Item $RegistryRoot -Recurse -Force }
+            Remove-Item $RegistryRoot -Recurse -Force
         }
         return
     }
@@ -860,7 +860,10 @@ function Invoke-RegWork {
         New-Item -ItemType Directory -Path $RegistryRoot -Force | Out-Null
     }
 
-    Write-Log "Exporting Registry keys..."
+    if (-not $DryRun) {
+        Write-Log "Exporting Registry keys..."
+    }
+
     $keys = @(
         'HKLM\SOFTWARE\MyCompany',
         'HKCU\Software\MyCompany'
@@ -919,9 +922,9 @@ exit /b %ERRORLEVEL%
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $path"
-        } else {
+        } elseif (Test-Path $path) {
             Write-Log "Removing: $path"
-            if (Test-Path $path) { Remove-Item $path -Force }
+            Remove-Item $path -Force
         }
         return
     }
@@ -939,7 +942,8 @@ exit /b %ERRORLEVEL%
 # SetupComplete.cmd
 # ==============================
 function Write-SetupCompleteScript {
-    $path = $paths.SetupCompleteCmd
+
+    $path = if ($Clean) { $paths.SourcesRoot } else { $paths.SetupCompleteCmd }
 
     $template = @'
 @echo off
@@ -991,9 +995,9 @@ for %%F in ("%USB%\{0}\{1}\*.msu") do (
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $path"
-        } else {
+        } elseif (Test-Path $path) {
             Write-Log "Removing: $path"
-            if (Test-Path $path) { Remove-Item $path -Force }
+            Remove-Item $path -Recurse -Force
         }
         return
     }
@@ -1037,10 +1041,14 @@ Telemetry=Disable
             Write-Log "[DryRun] Would remove: $cleanPath"
             Write-Log "[DryRun] Would remove: $upgradePath"
         } else {
-            Write-Log "Removing: $cleanPath"
-            if (Test-Path $cleanPath) { Remove-Item $cleanPath -Force }
-            Write-Log "Removing: $upgradePath"
-            if (Test-Path $upgradePath) { Remove-Item $upgradePath -Force }
+            if (Test-Path $cleanPath) {
+                Write-Log "Removing: $cleanPath"
+                Remove-Item $cleanPath -Force
+            }
+            if (Test-Path $upgradePath) {
+                Write-Log "Removing: $upgradePath"
+                Remove-Item $upgradePath -Force
+            }
         }
         return
     }
@@ -1089,10 +1097,14 @@ endlocal
             Write-Log "[DryRun] Would remove: $cleanPath"
             Write-Log "[DryRun] Would remove: $upgradePath"
         } else {
-            Write-Log "Removing: $cleanPath"
-            if (Test-Path $cleanPath) { Remove-Item $cleanPath -Force }
-            Write-Log "Removing: $upgradePath"
-            if (Test-Path $upgradePath) { Remove-Item $upgradePath -Force }
+            if (Test-Path $cleanPath) {
+                Write-Log "Removing: $cleanPath"
+                Remove-Item $cleanPath -Force
+            }
+            if (Test-Path $upgradePath) {
+                Write-Log "Removing: $upgradePath"
+                Remove-Item $upgradePath -Force
+            }
         }
         return
     }
@@ -1157,66 +1169,67 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
     # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
     $hapDll = Join-Path $PSScriptRoot "HtmlAgilityPack.dll"
 
-    if ($Clean) {
+    if ($Clean -or $DryRun) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $hapDll"
-        } else {
+        } elseif (Test-Path $hapDLL) {
             Write-Log "Removing: $hapDLL"
-            if (Test-Path $hapDLL) { Remove-Item $hapDLL -Force }
+            Remove-Item $hapDLL -Force
         }
     }
+    else {
+        if (-not (Test-Path $hapDll)) {
+            Write-Log "HtmlAgilityPack.dll not found - downloading..."
 
-    if (-not (Test-Path $hapDll)) {
-        Write-Log "HtmlAgilityPack.dll not found - downloading..."
+            $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
+            $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
+            $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
 
-        $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
-        $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
-        $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
+            # Clean old extraction folder if it exists
+            if (Test-Path $extractDir) {
+                Remove-Item $extractDir -Recurse -Force
+            }
 
-        # Clean old extraction folder if it exists
-        if (Test-Path $extractDir) {
+            # --- Download using .NET WebClient (PS 5.x safe) ---
+            Write-Verbose "Downloading via WebClient..."
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($nugetUrl, $tmpNupkg)
+
+            # --- Extract using .NET ZipFile (PS 5.x safe) ---
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
+
+            # Prefer netstandard2.0, fallback to net45
+            $candidatePaths = @(
+                (Join-Path $extractDir "lib\netstandard2.0\HtmlAgilityPack.dll"),
+                (Join-Path $extractDir "lib\net45\HtmlAgilityPack.dll")
+            )
+
+            $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $sourceDll) {
+                throw "HtmlAgilityPack.dll not found inside NuGet package."
+            }
+
+            Copy-Item -Path $sourceDll -Destination $hapDll -Force
+            Write-Verbose "HtmlAgilityPack.dll copied to: $hapDll"
+
+            # Cleanup: remove extraction folder + nupkg
             Remove-Item $extractDir -Recurse -Force
+            Remove-Item $tmpNupkg -Force
         }
 
-        # --- Download using .NET WebClient (PS 5.x safe) ---
-        Write-Verbose "Downloading via WebClient..."
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile($nugetUrl, $tmpNupkg)
+        # --- Load the DLL (PS 5.x safe) ---
+        $hapLoaded = $false
+        try {
+            [void][HtmlAgilityPack.HtmlDocument]
+            $hapLoaded = $true
+        } catch {}
 
-        # --- Extract using .NET ZipFile (PS 5.x safe) ---
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
-
-        # Prefer netstandard2.0, fallback to net45
-        $candidatePaths = @(
-            (Join-Path $extractDir "lib\netstandard2.0\HtmlAgilityPack.dll"),
-            (Join-Path $extractDir "lib\net45\HtmlAgilityPack.dll")
-        )
-
-        $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if (-not $sourceDll) {
-            throw "HtmlAgilityPack.dll not found inside NuGet package."
+        if (-not $hapLoaded) {
+            Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
+            Add-Type -Path $hapDll
+            Write-Debug "HtmlAgilityPack successfully loaded."
         }
-
-        Copy-Item -Path $sourceDll -Destination $hapDll -Force
-        Write-Verbose "HtmlAgilityPack.dll copied to: $hapDll"
-
-        # Cleanup: remove extraction folder + nupkg
-        Remove-Item $extractDir -Recurse -Force
-        Remove-Item $tmpNupkg -Force
-    }
-
-    # --- Load the DLL (PS 5.x safe) ---
-    $hapLoaded = $false
-    try {
-        [void][HtmlAgilityPack.HtmlDocument]
-        $hapLoaded = $true
-    } catch {}
-
-    if (-not $hapLoaded) {
-        Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
-        Add-Type -Path $hapDll
-        Write-Debug "HtmlAgilityPack successfully loaded."
     }
 }
 
@@ -1225,29 +1238,20 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 # Core paths
 # ==============================
 $paths = [ordered]@{}
-$paths.UpdatesRoot           = Join-Path $Folder $names.Updates
-$paths.UpdatesSSU            = Join-Path $paths.UpdatesRoot $names.SSU
-$paths.UpdatesOSCU           = Join-Path $paths.UpdatesRoot $names.OSCU
-$paths.UpdatesNET            = Join-Path $paths.UpdatesRoot $names.NET
-$paths.UpdatesMISC           = Join-Path $paths.UpdatesRoot $names.MISC
 $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $Folder $names.Registry
+$paths.SourcesRoot           = Join-Path $Folder $names.Sources
 $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
 $paths.InstallDriversLog     = Join-Path $Folder $names.InstallDriversLog
-$paths.SetupCompleteCmd      = Join-Path $Folder $names.SetupCompleteCmd
-$paths.SetupCompleteLog      = Join-Path "%SystemRoot%\Setup\Scripts" $names.SetupCompleteLog
+$paths.SetupCompleteCmd      = Join-Path (Join-Path $Folder $names.ScriptsInFolder) $names.SetupCompleteCmd
+$paths.SetupCompleteLog      = Join-Path $names.ScriptsOnOOBE $names.SetupCompleteLog
 $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
 $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
 $paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
 $paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
-
-if (-not $Clean -and -not $DryRun) {
-    foreach ($p in $paths.Values) {
-        if (-not (Test-Path $p)) {
-            Write-Verbose "Creating folder: $p"
-            New-Item -ItemType Directory -Path $p -Force | Out-Null
-        }
-    }
+$paths.UpdatesRoot           = Join-Path $Folder $names.Updates
+foreach ($u in $updateDirs) {
+    $paths["Updates$u"] = Join-Path $paths.UpdatesRoot $names.$u
 }
 
 # ==============================
@@ -1258,7 +1262,6 @@ if ($Drivers) { Invoke-DriverWork }
 if ($Reg) { Invoke-RegWork }
 
 if ($Files) {
-    Write-Log "Scripts and config files..."
     Write-InstallDriversScript
     Write-SetupCompleteScript
     Write-SetupConfigFiles
