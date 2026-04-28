@@ -102,7 +102,7 @@ param(
 )
 
 # git hash
-$GitHash = "e9e3f64"
+$GitHash = "cc27a1e"
 
 if ($Help) {
     Get-Help -Full $PSCommandPath
@@ -703,11 +703,13 @@ function Invoke-KBWork {
         $count++
         try {
             $d = Get-UpdateDetails -Count $count -Guid $g
-            if ($d -and $d.DownloadUrls -and $d.DownloadUrls.Count -gt 0) {
+
+            # Only include updates that are not superseded by anything else and have download URLs
+            if ($d.SupersededBy.count -eq 0 -and $d.DownloadUrls -and $d.DownloadUrls.Count -gt 0) {
                 $details += $d
             }
             else {
-                Write-Verbose "No download URLs for $g"
+                Write-Verbose "Superseded or no download URLs for $g"
             }
         }
         catch {
@@ -719,29 +721,13 @@ function Invoke-KBWork {
         Write-Host "No usable updates after details resolution."
         return @()
     }
-
-    # Supersedence filtering
-    $supersededSet = @{}
-    foreach ($d in $details) {
-        foreach ($s in $d.SupersededBy) {
-            $supersededSet[$d.Guid] = $true
-        }
-    }
-
-    $effective = $details | Where-Object { -not $supersededSet.ContainsKey($_.Guid) }
-
-    Write-Host ("Remaining updates after supersedence filtering: {0}" -f $effective.Count)
-    Write-Debug "Effective GUIDs:`n$($effective.Guid -join "`n")"
-
-    if ($effective.Count -eq 0) {
-        Write-Host "No effective updates after supersedence filtering."
-        return @()
-    }
+    Write-Host ("Remaining applicable updates: {0}" -f $details.Count)
+    Write-Debug "GUIDs:`n$($details.Guid -join "`n")"
 
     Write-Host "Synchronizing update folders..."
 
     $requiredFiles = @()
-    foreach ($d in $effective) {
+    foreach ($d in $details) {
         foreach ($url in $d.DownloadUrls) {
             $requiredFiles += (Split-Path $url -Leaf)
         }
@@ -774,7 +760,7 @@ function Invoke-KBWork {
         $UpdatesSSU  = @()
     }
 
-    foreach ($d in $effective) {
+    foreach ($d in $details) {
         $targetFolder = switch -Regex ($d.Title) {
                 'Servicing Stack Update' { $UpdatesSSU }
                 '\.NET'                  { $UpdatesNET }
