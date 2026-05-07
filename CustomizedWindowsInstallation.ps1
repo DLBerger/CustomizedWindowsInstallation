@@ -113,7 +113,7 @@ param(
 )
 
 # git hash
-$GitHash = "68df975"
+$GitHash = "64a7673"
 
 # ==============================
 # Core names
@@ -126,6 +126,7 @@ $names = [ordered]@{
     Registry              = 'Registry'
     InstallEsd            = 'install.esd'
     InstallWim            = 'install.wim'
+    WinreWim              = 'winre.wim'
     InstallDriversCmd     = 'InstallDrivers.cmd'
     InstallRegsCmd        = 'InstallRegs.cmd'
     PostSetupCmd          = 'PostSetup.cmd'
@@ -1109,7 +1110,89 @@ Write-Output "Completed successfully. Final WIM: $FinalInstallWim"
 # ==============================
 function Invoke-RegWork {
 
+    <#
+    #
+    # Example tables (embedded like original template)
+    #
+    $RegistryAddModify = @(
+        @{
+            Key    = 'HKLM\SOFTWARE\MyCompany'
+            Values = @(
+                @('SettingA'),
+                @('SettingB','X')
+            )
+        },
+        @{
+            Key    = 'HKCU\Software\MyCompany'
+            Values = @(
+                @()                     # export entire key (dominates)
+            )
+        }
+    )
+
+    $RegistryRemove = @(
+        @{
+            Key    = 'HKLM\SOFTWARE\MyCompany'
+            Values = @(
+                @('OldValue')
+            )
+        },
+        @{
+            Key    = 'HKCU\Software\MyCompany'
+            Values = @(
+                @()                     # delete entire key (dominates)
+            )
+        }
+    )
+    #>
+
+    $RegistryAddModify = @(
+        @{
+            Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
+            Values = @()
+        },
+        @{
+            Key    = 'HKEY_CLASSES_ROOT\Directory\Background\shell\Windows.ShowFileExtensions'
+            Values = @()
+        },
+        @{
+            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+            Values = @('LaunchTo',
+                       'Start_IrisRecommendations',
+                       'ShowTaskViewButton',
+                       'HideFileExt',
+                       'SeparateProcess')
+        },
+        @{
+            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\CabinetState'
+            Values = @('FullPath')
+        },
+        @{
+            Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsUpdate\UX\Settings'
+            Values = @('AllowMUUpdateService')
+        },
+        @{
+            Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem'
+            Values = @('LongPathsEnabled')
+        },
+        @{
+            Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power'
+            Values = @('HibernateEnabled')
+        },
+        @{
+            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
+            Values = @('TaskbarEndTask')
+        }
+    )
+
+    $RegistryRemove = @(
+    )
+
     $RegistryRoot = $paths.RegistryRoot
+
+    #
+    # CLEAN MODE
+    #
     if ($Clean) {
         if ($DryRun) {
             Write-Log "[DryRun] Would remove: $RegistryRoot"
@@ -1120,25 +1203,212 @@ function Invoke-RegWork {
         return
     }
 
+    #
+    # PREP OUTPUT FOLDER
+    #
     if (-not $DryRun) {
-        Write-Log "Exporting Registry keys..."
         Ensure-Folder -Path $RegistryRoot
     }
 
-    $keys = @(
-        'HKLM\SOFTWARE\MyCompany',
-        'HKCU\Software\MyCompany'
-    )
+    #
+    # HELPERS
+    #
+    function RegSafeName([string]$key) {
+        ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
+    }
 
-    foreach ($key in $keys) {
-        $safe = ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
-        $dest = Join-Path $RegistryRoot $safe
+    function RegExportEntireKey([string]$key, [string]$dest) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would export ENTIRE key: $key -> $dest"
+        } else {
+            Write-Log "Export ENTIRE key: $key -> $dest"
+            reg.exe export "$key" "$dest" /y | Out-Null
+        }
+    }
+
+    function RegExportSpecificValues([string]$key, [string]$dest, [object[]]$groups) {
+
+        # Flatten values, skipping null/empty
+        $allValues = @()
+        foreach ($g in $groups) {
+            if (-not $g) { continue }
+            foreach ($v in $g) {
+                if ($null -ne $v -and $v -ne '') { $allValues += $v }
+            }
+        }
+        $allValues = $allValues | Sort-Object -Unique
+
+        if (-not $allValues -or $allValues.Count -eq 0) {
+            Write-Log "No specific values requested for $key; skipping."
+            return
+        }
 
         if ($DryRun) {
-            Write-Log "[DryRun] Would export: $key -> $dest"
+            Write-Log "[DryRun] Would export values [$($allValues -join ', ')] from $key -> $dest"
+            return
+        }
+
+        Write-Log "Export specific values [$($allValues -join ', ')] from $key -> $dest"
+
+        $query = reg.exe query "$key" /v * 2>$null
+        if (-not $query) {
+            Write-Log "WARNING: No data returned for $key"
+            return
+        }
+
+        $out = New-Object System.Collections.Generic.List[string]
+        $out.Add("Windows Registry Editor Version 5.00")
+        $out.Add("")
+
+        $header = "[" + $key + "]"
+        $out.Add($header)
+
+        foreach ($line in $query) {
+
+            if ($line -match '^\s+([^\s]+)\s+REG_([A-Z0-9_]+)\s+(.*)$') {
+
+                $valName = $matches[1]
+                $type    = $matches[2]
+                $data    = $matches[3]
+
+                if ($allValues -contains $valName) {
+
+                    switch ($type) {
+                        "SZ" {
+                            $regLine = '"' + $valName + '"="' + $data + '"'
+                        }
+                        "DWORD" {
+                            $regLine = '"' + $valName + '"=dword:' + ("{0:x8}" -f [int]$data)
+                        }
+                        default {
+                            $regLine = '"' + $valName + '"="' + $data + '"'
+                        }
+                    }
+
+                    $out.Add($regLine)
+                }
+            }
+        }
+
+        $out.Add("")
+        $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
+    }
+
+    function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
+
+        if ($DryRun) {
+            if (-not $values -or $values.Count -eq 0) {
+                Write-Log "[DryRun] Would delete ENTIRE key: $key"
+            } else {
+                Write-Log "[DryRun] Would delete values [$($values -join ', ')] from $key"
+            }
+            return
+        }
+
+        Write-Log "Appending delete instructions for $key -> $dest"
+
+        $out = New-Object System.Collections.Generic.List[string]
+
+        if (Test-Path $dest) {
+            $existing = Get-Content $dest -Raw
+            foreach ($l in ($existing -split "`r?`n")) { $out.Add($l) }
         } else {
-            Write-Log "Export: $key -> $dest"
-            reg.exe export "$key" "$dest" /y | Out-Null
+            $out.Add("Windows Registry Editor Version 5.00")
+            $out.Add("")
+        }
+
+        if (-not $values -or $values.Count -eq 0) {
+            $line = "[-" + $key + "]"
+            $out.Add($line)
+            $out.Add("")
+        } else {
+            $header = "[" + $key + "]"
+            $out.Add($header)
+
+            foreach ($v in $values) {
+                $line = '"' + $v + '"=-'
+                $out.Add($line)
+            }
+
+            $out.Add("")
+        }
+
+        $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
+    }
+
+    #
+    # PROCESS ADD/MODIFY
+    #
+    foreach ($entry in $RegistryAddModify) {
+
+        $key    = $entry.Key
+        $groups = $entry.Values
+
+        $safe = "AddModify_" + (RegSafeName $key)
+        $dest = Join-Path $RegistryRoot $safe
+
+        # entire key if:
+        # - Values is null/empty, OR
+        # - any inner list is null/empty
+        $hasEntire = $false
+        if (-not $groups -or $groups.Count -eq 0) {
+            $hasEntire = $true
+        } else {
+            foreach ($g in $groups) {
+                if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
+                    $hasEntire = $true
+                    break
+                }
+            }
+        }
+
+        if ($hasEntire) {
+            if ($DryRun) {
+                Write-Log "[DryRun] Would export ENTIRE key: $key -> $dest"
+            } else {
+                RegExportEntireKey $key $dest
+            }
+        } else {
+            RegExportSpecificValues $key $dest $groups
+        }
+    }
+
+    #
+    # PROCESS REMOVE
+    #
+    foreach ($entry in $RegistryRemove) {
+
+        $key    = $entry.Key
+        $groups = $entry.Values
+
+        $safe = "Remove_" + (RegSafeName $key)
+        $dest = Join-Path $RegistryRoot $safe
+
+        $hasEntire = $false
+        if (-not $groups -or $groups.Count -eq 0) {
+            $hasEntire = $true
+        } else {
+            foreach ($g in $groups) {
+                if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
+                    $hasEntire = $true
+                    break
+                }
+            }
+        }
+
+        if ($hasEntire) {
+            RegAppendDelete $dest $key @()
+        } else {
+            $allValues = @()
+            foreach ($g in $groups) {
+                if (-not $g) { continue }
+                foreach ($v in $g) {
+                    if ($null -ne $v -and $v -ne '') { $allValues += $v }
+                }
+            }
+            $allValues = $allValues | Sort-Object -Unique
+
+            RegAppendDelete $dest $key $allValues
         }
     }
 }
@@ -1582,6 +1852,7 @@ $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
 $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
 $paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
 $paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
+$paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
     $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
