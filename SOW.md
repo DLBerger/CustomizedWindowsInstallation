@@ -42,7 +42,7 @@ Parameters:
     If omitted, determined from the contents of <ISO>.
 
   - Export
-    Mount and copy the contains of <ISO> to <Folder> and then export the request indices (see below).
+    Mount and copy the contents of <ISO> to <Folder> and then export the requested indices (see below).
 
   - KB
     Download OS and .NET updates based on <WinOS>, <Version>, and <Arch>.
@@ -160,6 +160,53 @@ Primary assumptions:
       Lots of fast storage available.
       User will supply a single driver root folder produced by dism /export-driver.
       The winre.wim to service is located at Windows\System32\Recovery\winre.wim inside each index's wim.
+  - Naming conventions for files and paths we may want to change easily:
+      $names = [ordered]@{
+          Iso                   = 'ISO'
+          KBs                   = 'KBs'
+          Wims                  = 'Wims'
+          WinpeDriver           = '$WinpeDriver$'
+          Registry              = 'Registry'
+          InstallEsd            = 'install.esd'
+          InstallWim            = 'install.wim'
+          InstallDriversCmd     = 'InstallDrivers.cmd'
+          InstallRegsCmd        = 'InstallRegs.cmd'
+          PostSetupCmd          = 'PostSetup.cmd'
+          SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
+          SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
+          CleanInstallCmd       = 'CleanInstall.cmd'
+          UpgradeCmd            = 'Upgrade.cmd'
+      }
+
+      $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
+      foreach ($u in $kbDirs) {
+          $names[$u] = $u
+      }
+
+      $wimDirs = @('Temp', 'Mounts', 'Captures')
+      foreach ($u in $wimDirs) {
+          $names[$u] = $u
+      }
+
+      $paths = [ordered]@{}
+      $paths.IsoRoot               = Join-Path $Folder $names.Iso
+      $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
+      $paths.RegistryRoot          = Join-Path $Folder $names.Registry
+      $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
+      $paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
+      $paths.PostSetupCmd          = Join-Path $Folder $names.PostSetupCmd
+      $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
+      $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
+      $paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
+      $paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
+      $paths.KBsRoot               = Join-Path $Folder $names.KBs
+      foreach ($u in $kbDirs) {
+          $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
+      }
+      $paths.WimsRoot              = Join-Path $Folder $names.Wims
+      foreach ($u in $wimDirs) {
+          $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
+      }
 
 Suggested Export processing:
   - Ensure there is a folder under <Folder> to copy the .iso contents to.
@@ -181,7 +228,7 @@ Suggested Export processing:
      At the end of each wim extraction mark <index>_boot.wim.extracted or <index>_install.wim.extracted, respectively.
 
 Suggested KB processing:
-  - TBD
+  - TBD - (Just accept what is already there in the existing script)
 
 Suggested Servive processing:
   - For each index (parallel jobs):
@@ -189,17 +236,14 @@ Suggested Servive processing:
         Mount <index>_install.wim to a per-index mount folder.
         Check for <index>_winre.done, if not:
           Locate Windows\System32\Recovery\winre.wim inside the mounted tree. If present, extract it to <index>_winre.wim and mark checkpoint <index>_winre.extracted.
-          Checking each file in each KB package for <index>_winre.<kbfilename>.applied, if not:
-            Apply KB package file to the mounted install image with dism and mark <index>_winre.<kbfilename>.applied.
+          Apply KB package file to the mounted install image with dism.
           Unmount and commit the winre image.
           Reinsert the serviced <index>_winre.wim back into the mounted install image at Windows\System32\Recovery\winre.wim and mark <index>_winre.done.
-        Checking each file in each KB package for <index>_install.<kbfilename>.applied, if not:
-          Apply KB package file to the mounted install image with dism and mark <index>_install.<kbfilename>.applied.
+        Apply KB package file to the mounted install image with dism.
         Unmount and commit the install image and mark <index>_install.done.
       Check for <index>_boot.done, if not:
         Mount <index>_boot.wim to a per-index mount folder.
-        Checking each file in each KB package for <index>_boot.<kbfilename>.serviced, if not:
-          Apply KB package file to the mounted install image with dism and mark <index>_boot.<kbfilename>.applied.
+        Apply KB package file to the mounted install image with dism.
         Unmount and commit the install image and mark <index>_boot.done.
   - Final assembly:
       Do the following steps serially as the final compression is going to be slow if Maximum is selected.
