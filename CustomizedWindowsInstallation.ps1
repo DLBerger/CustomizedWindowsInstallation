@@ -12,6 +12,7 @@ It supports:
 - Exporting registry keys into .reg files.
 - Generating:
     - InstallDrivers.cmd
+    - InstallRegs.cmd
     - PostSetup.cmd
     - SetupConfig-Clean.ini
     - SetupConfig-Upgrade.ini
@@ -112,7 +113,7 @@ param(
 )
 
 # git hash
-$GitHash = "484342d"
+$GitHash = "68df975"
 
 # ==============================
 # Core names
@@ -126,6 +127,7 @@ $names = [ordered]@{
     InstallEsd            = 'install.esd'
     InstallWim            = 'install.wim'
     InstallDriversCmd     = 'InstallDrivers.cmd'
+    InstallRegsCmd        = 'InstallRegs.cmd'
     PostSetupCmd          = 'PostSetup.cmd'
     SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
@@ -1142,46 +1144,127 @@ function Invoke-RegWork {
 }
 
 # ==============================
+# InstallDrivers.cmd
+# ==============================
+function Write-InstallDriversCmd {
+
+    $path = $paths.InstallDriversCmd
+
+    $template = @'
+@echo off
+setlocal
+set "SRC=%~dp0"
+:: Must be run elevated to work
+
+echo Import drivers
+pnputil /add-driver "%SRC%\{0}\*.inf" /subdirs /install
+endlocal
+'@
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $path"
+        } elseif (Test-Path $path) {
+            Write-Log "Removing: $path"
+            Remove-Item $path -Force
+        }
+        return
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $path"
+    } else {
+        Write-Log "Writing: $path"
+        Ensure-Folder (Split-Path $path -Parent)
+
+        $content = $template -f $names.WinpeDriver
+        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
+    }
+}
+
+# ==============================
+# InstallRegs.cmd
+# ==============================
+function Write-InstallRegsCmd {
+
+    $path = $paths.InstallRegsCmd
+
+    $template = @'
+@echo off
+setlocal
+set "SRC=%~dp0"
+
+echo Import registry files
+for %%F in ("%SRC%\{0}\*.reg") do (
+    reg.exe import "%%F"
+)
+endlocal
+'@
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $path"
+        } elseif (Test-Path $path) {
+            Write-Log "Removing: $path"
+            Remove-Item $path -Force
+        }
+        return
+    }
+
+    if ($DryRun) {
+        Write-Log "[DryRun] Would write: $path"
+    } else {
+        Write-Log "Writing: $path"
+        Ensure-Folder (Split-Path $path -Parent)
+
+        $osContent = ""
+        foreach ($u in $kbDirs) {
+            $osContent += $osTemplate -f $names.KBs, $names.$u
+        }
+        $content = $template -f $names.Registry
+        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
+    }
+}
+
+# ==============================
 # PostSetup.cmd
 # ==============================
-function Write-PostSetupScript {
+function Write-PostSetupCmd {
 
     $path = $paths.PostSetupCmd
 
     $template = @'
 @echo off
 setlocal enabledelayedexpansion
+set "SRC=%~dp0"
 
 :: Apply KBs in the correct order
 
 {0}
-echo Import registry files
-for %%F in ("{1}\*.reg") do (
-    reg.exe import "%%F"
-)
+endlocal
 '@
 
     $osTemplate = @'
-echo Installing updates from {0}\{1}
+echo Installing updates from %SRC%\{0}\{1}
 
 :: Install EXE installers
-for %%F in ("{0}\{1}\*.exe") do (
+for %%F in ("%SRC%\{0}\{1}\*.exe") do (
     echo Installing EXE %%F
     "%%F" /quiet /norestart
 )
 
 :: Install MSI installers
-for %%F in ("{0}\{1}\*.msi") do (
+for %%F in ("%SRC%\{0}\{1}\*.msi") do (
     echo Installing MSI %%F
     msiexec.exe /i "%%F" /quiet /norestart
 )
 
 :: Run CMD/BAT scripts
-for %%F in ("{0}\{1}\*.cmd") do (
+for %%F in ("%SRC%\{0}\{1}\*.cmd") do (
     echo Running CMD %%F
     call "%%F"
 )
-for %%F in ("{0}\{1}\*.bat") do (
+for %%F in ("%SRC%\{0}\{1}\*.bat") do (
     echo Running BAT %%F
     call "%%F"
 )
@@ -1305,6 +1388,7 @@ Telemetry=Disable
         Set-Content -LiteralPath $upgradePath -Value $upgradeTemplate -Encoding ASCII
     }
 }
+
 # ==============================
 # Setup CMD Files
 # ==============================
@@ -1363,6 +1447,7 @@ endlocal
         Set-Content -LiteralPath $upgradePath -Value $upgradeContent -Encoding ASCII
     }
 }
+
 # Real work starts here
 
 # Apply defaults
@@ -1490,6 +1575,8 @@ $paths = [ordered]@{}
 $paths.IsoRoot               = Join-Path $Folder $names.Iso
 $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $Folder $names.Registry
+$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
+$paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
 $paths.PostSetupCmd          = Join-Path $Folder $names.PostSetupCmd
 $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
 $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
@@ -1515,7 +1602,9 @@ if ($Reg) { Invoke-RegWork }
 if ($Service) { Invoke-IsoWork }
 
 if ($Files) {
-    Write-PostSetupScript
+    Write-InstallDriversCmd
+    Write-InstallRegsCmd
+    Write-PostSetupCmd
     Write-SetupConfigFiles
     Write-SetupCmdFiles
 }
