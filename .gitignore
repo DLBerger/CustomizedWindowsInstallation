@@ -1,8 +1,11 @@
 $WinpeDriver$
-CleanInstall.cmd
-HtmlAgilityPack.dll
 KBs
+CleanInstall.cmd
+InstallDrivers.cmd
+InstallRegs.cmd
 PostSetup.cmd
 SetupConfig-Clean.ini
 SetupConfig-Upgrade.ini
 Upgrade.cmd
+HtmlAgilityPack.dll
+CustomizedWindowsInstallation.ps1.old
