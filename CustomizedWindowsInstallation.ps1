@@ -113,7 +113,7 @@ param(
 )
 
 # git hash
-$GitHash = "c7a64e5"
+$GitHash = "ade1977"
 
 # ==============================
 # Core names
@@ -868,10 +868,10 @@ if ($p.ExitCode -ne 0) { throw "DISM failed" }
 }
 
 # ==============================
-# ISO generation
+# Servicing WIMs
 # ==============================
-function Invoke-IsoWork {
-Write-Log "ISO generation not implemented yet"
+function Invoke-ServiceWork {
+Write-Log "Service workflow not implemented yet"
 <#
 # -------------------- Configuration --------------------
 $OriginalInstallWim = 'C:\images\install.wim'
@@ -1769,78 +1769,77 @@ if ($Clean)  { Write-Log "Clean mode    : Enabled" "WARN" }
 if ($DryRun) { Write-Log "Dry-run mode  : Enabled" "WARN" }
 
 if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
-# --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
-$HtmlAgilityPackDll = 'HtmlAgilityPack.dll'
-$hapDll = Join-Path $Folder $HtmlAgilityPackDll
+    # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
+    $HtmlAgilityPackDll = 'HtmlAgilityPack.dll'
+    $hapDll = Join-Path $Folder $HtmlAgilityPackDll
 
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $hapDll"
-    } elseif (Test-Path $hapDLL) {
-        Write-Log "Removing: $hapDLL"
-        Remove-Item $hapDLL -Force
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Log "[DryRun] Would remove: $hapDll"
+        } elseif (Test-Path $hapDLL) {
+            Write-Log "Removing: $hapDLL"
+            Remove-Item $hapDLL -Force
+        }
     }
-}
-elseif ($DryRun) {
-    if (-not (Test-Path $hapDll)) {
-        Write-Log "[DryRun] Would download: $HtmlAgilityPackDll"
-    }   
-} else {
-    if (-not (Test-Path $hapDll)) {
-        Write-Log "HtmlAgilityPack.dll not found - downloading..."
+    elseif ($DryRun) {
+        if (-not (Test-Path $hapDll)) {
+            Write-Log "[DryRun] Would download: $HtmlAgilityPackDll"
+        }   
+    } else {
+        if (-not (Test-Path $hapDll)) {
+            Write-Log "HtmlAgilityPack.dll not found - downloading..."
 
-        $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
-        $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
-        $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
+            $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
+            $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
+            $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
 
-        # Clean old extraction folder if it exists
-        if (Test-Path $extractDir) {
+            # Clean old extraction folder if it exists
+            if (Test-Path $extractDir) {
+                Remove-Item $extractDir -Recurse -Force
+            }
+
+            # --- Download using .NET WebClient (PS 5.x safe) ---
+            Write-Verbose "Downloading via WebClient..."
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($nugetUrl, $tmpNupkg)
+
+            # --- Extract using .NET ZipFile (PS 5.x safe) ---
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
+
+            # Prefer netstandard2.0, fallback to net45
+            $candidatePaths = @(
+                (Join-Path $extractDir "lib\netstandard2.0\$HtmlAgilityPackDll"),
+                (Join-Path $extractDir "lib\net45\$HtmlAgilityPackDll")
+            )
+
+            $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $sourceDll) {
+                throw "$HtmlAgilityPackDll not found inside NuGet package"
+            }
+
+            Copy-Item -Path $sourceDll -Destination $hapDll -Force
+            Write-Verbose "$HtmlAgilityPackDll copied to: $hapDll"
+
+            # Cleanup: remove extraction folder + nupkg
             Remove-Item $extractDir -Recurse -Force
+            Remove-Item $tmpNupkg -Force
         }
 
-        # --- Download using .NET WebClient (PS 5.x safe) ---
-        Write-Verbose "Downloading via WebClient..."
-        $wc = New-Object System.Net.WebClient
-        $wc.DownloadFile($nugetUrl, $tmpNupkg)
+        # --- Load the DLL (PS 5.x safe) ---
+        $hapLoaded = $false
+        try {
+            [void][HtmlAgilityPack.HtmlDocument]
+            $hapLoaded = $true
+        } catch {}
 
-        # --- Extract using .NET ZipFile (PS 5.x safe) ---
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
-
-        # Prefer netstandard2.0, fallback to net45
-        $candidatePaths = @(
-            (Join-Path $extractDir "lib\netstandard2.0\$HtmlAgilityPackDll"),
-            (Join-Path $extractDir "lib\net45\$HtmlAgilityPackDll")
-        )
-
-        $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if (-not $sourceDll) {
-            throw "$HtmlAgilityPackDll not found inside NuGet package"
+        if (-not $hapLoaded) {
+            Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
+            Add-Type -Path $hapDll
+            Write-Debug "HtmlAgilityPack successfully loaded"
         }
-
-        Copy-Item -Path $sourceDll -Destination $hapDll -Force
-        Write-Verbose "$HtmlAgilityPackDll copied to: $hapDll"
-
-        # Cleanup: remove extraction folder + nupkg
-        Remove-Item $extractDir -Recurse -Force
-        Remove-Item $tmpNupkg -Force
-    }
-
-    # --- Load the DLL (PS 5.x safe) ---
-    $hapLoaded = $false
-    try {
-        [void][HtmlAgilityPack.HtmlDocument]
-        $hapLoaded = $true
-    } catch {}
-
-    if (-not $hapLoaded) {
-        Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
-        Add-Type -Path $hapDll
-        Write-Debug "HtmlAgilityPack successfully loaded"
     }
 }
-}
-
 
 # ==============================
 # Core paths
@@ -1885,14 +1884,14 @@ if ($Export) { Invoke-ExportWork }
 if ($KB) { Invoke-KBWork }
 if ($Drivers) { Invoke-DriverWork }
 if ($Reg) { Invoke-RegWork }
-if ($Service) { Invoke-IsoWork }
+if ($Service) { Invoke-ServiceWork }
 
 if ($Files) {
-Write-InstallDriversCmd
-Write-InstallRegsCmd
-Write-PostSetupCmd
-Write-SetupConfigFiles
-Write-SetupCmdFiles
+    Write-InstallDriversCmd
+    Write-InstallRegsCmd
+    Write-PostSetupCmd
+    Write-SetupConfigFiles
+    Write-SetupCmdFiles
 }
 
 Write-Log "Completed"
