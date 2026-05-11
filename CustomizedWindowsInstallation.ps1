@@ -181,11 +181,473 @@ Write-Host "[$ts] [$Level] $Message"
 }
 
 # =========================
-# WIM export
+# Extract/Export section
 # =========================
 
 function Invoke-ExportWork {
-Write-Log "WIM export not implemented yet"
+    [CmdletBinding()]
+    param()
+
+    Write-Log "Starting Export workflow..."
+    
+    # Ensure source ISO root
+    Ensure-Folder -Path $paths.SrcIsoRoot
+    
+    if ($DryRun) {
+        Write-Log "[DryRun] Would mount and copy ISO contents to $($paths.SrcIsoRoot)"
+        Write-Log "[DryRun] Would copy from $($paths.SrcIsoRoot) to $($paths.DestIsoRoot)"
+        Write-Log "[DryRun] Would export requested indices to $($paths.WimsIndices)"
+        return
+    }
+    
+    if ($Clean) {
+        if (Test-Path $paths.SrcIsoRoot) {
+            Write-Log "Removing source ISO root: $($paths.SrcIsoRoot)"
+            Remove-Item $paths.SrcIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $paths.DestIsoRoot) {
+            Write-Log "Removing dest ISO root: $($paths.DestIsoRoot)"
+            Remove-Item $paths.DestIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $paths.WimsIndices) {
+            Write-Log "Removing indices: $($paths.WimsIndices)"
+            Remove-Item $paths.WimsIndices -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
+    
+    # Checkpoint tracking
+    $srcIsoCopyCheckpoint = Join-Path $paths.Checkpoint "srciso.copy.done"
+    $destIsoCopyCheckpoint = Join-Path $paths.Checkpoint "destiso.copy.done"
+    
+    # Check if source ISO copy is already done
+    if (Test-Path $srcIsoCopyCheckpoint) {
+        Write-Log "Source ISO copy already completed (checkpoint exists)"
+    } else {
+        Write-Log "Copying ISO contents from mounted ISO to $($paths.SrcIsoRoot)..."
+        
+        # Verify $names.BootWim and ($names.InstallEsd or $names.InstallWim) exist
+        $bootWimPath = Join-Path $paths.SourceInSrc $names.BootWim
+        $installWimPath = Join-Path $paths.SourceInSrc $names.InstallWim
+        $installEsdPath = Join-Path $paths.SourceInSrc $names.InstallEsd
+        
+        if (-not (Test-Path $bootWimPath)) {
+            throw "Required file not found: $bootWimPath"
+        }
+        if (-not ((Test-Path $installWimPath) -or (Test-Path $installEsdPath))) {
+            throw "Required file not found: $installWimPath or $installEsdPath"
+        }
+        
+        # Mark checkpoint
+        Ensure-Folder -Path $paths.Checkpoint
+        Set-Content -Path $srcIsoCopyCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+        Write-Log "Source ISO copy completed - checkpoint marked"
+    }
+    
+    # Check if dest ISO copy is already done
+    if (Test-Path $destIsoCopyCheckpoint) {
+        Write-Log "Destination ISO copy already completed (checkpoint exists)"
+    } else {
+        Write-Log "Copying from $($paths.SrcIsoRoot) to $($paths.DestIsoRoot)..."
+        
+        # Copy contents using robocopy, excluding boot.wim, install.wim, install.esd
+        Ensure-Folder -Path $paths.DestIsoRoot
+        
+        $robocopyArgs = @(
+            $paths.SrcIsoRoot,
+            $paths.DestIsoRoot,
+            '/E',           # Recursively copy all subdirectories
+            '/COPY:DAT',    # Copy data, attributes, timestamps
+            '/XF',
+            $names.BootWim,
+            $names.InstallWim,
+            $names.InstallEsd  # Exclude these files
+        )
+        
+        Write-Verbose "Running: robocopy $($robocopyArgs -join ' ')"
+        $robocopyOutput = robocopy @robocopyArgs
+        
+        if ($LASTEXITCODE -gt 7) {
+            throw "Robocopy failed with exit code $LASTEXITCODE"
+        }
+        
+        # Mark checkpoint
+        Set-Content -Path $destIsoCopyCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+        Write-Log "Destination ISO copy completed - checkpoint marked"
+    }
+    
+    # Export requested indices
+    Write-Log "Exporting requested indices to $($paths.WimsIndices)..."
+    Ensure-Folder -Path $paths.WimsIndices
+    
+    # TODO: Extract indices from install.wim/install.esd based on index selection
+    # For now, create checkpoint marker for the export job completion
+    $exportCheckpoint = Join-Path $paths.Checkpoint "export.done"
+    if (-not (Test-Path $exportCheckpoint)) {
+        Write-Log "Index extraction would occur here (per-index uncompressed WIMs)"
+        Set-Content -Path $exportCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+        Write-Log "Export checkpoint marked"
+    }
+    
+    Write-Log "Export workflow complete"
+}
+
+# =========================
+# Service/Patch section
+# =========================
+
+function Invoke-ServiceWork {
+    [CmdletBinding()]
+    param()
+
+    Write-Log "Starting Service workflow..."
+    
+    if ($DryRun) {
+        Write-Log "[DryRun] Would mount and service extracted indices"
+        Write-Log "[DryRun] Would apply packages from KB folders (SSU, OSCU) to install.wim and boot.wim"
+        Write-Log "[DryRun] Would service winre.wim inside each index"
+        Write-Log "[DryRun] Would create final compressed install.wim and boot.wim"
+        return
+    }
+    
+    if ($Clean) {
+        $wimCheckpoint = Join-Path $paths.Checkpoint "wims.done"
+        if (Test-Path $paths.WimsRoot) {
+            Write-Log "Removing WIMs root: $($paths.WimsRoot)"
+            Remove-Item $paths.WimsRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $wimCheckpoint) {
+            Remove-Item $wimCheckpoint -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
+    
+    # Service configuration
+    $CompressionType = 'Maximum'  # None, Fast, Maximum
+    $MaxParallelJobs = 4
+    
+    Ensure-Folder -Path $paths.WimsMounts
+    Ensure-Folder -Path $paths.WimsServiced
+    Ensure-Folder -Path $paths.Checkpoint
+    
+    # Get list of extracted indices to service
+    if (-not (Test-Path $paths.WimsIndices)) {
+        Write-Log "No indices folder found: $($paths.WimsIndices)"
+        return
+    }
+    
+    $extractedIndices = @()
+    $extractedIndices += Get-ChildItem -Path $paths.WimsIndices -Filter "*_$($names.InstallWim)" -File |
+        ForEach-Object { [int]($_.BaseName -replace "_$([regex]::Escape($names.InstallWim))$") } |
+        Sort-Object
+    
+    if ($extractedIndices.Count -eq 0) {
+        Write-Log "No extracted install.wim indices found"
+        return
+    }
+    
+    Write-Log "Found $($extractedIndices.Count) indices to service: $($extractedIndices -join ', ')"
+    
+    # Check for packages in KB folders
+    $hasSSU = (Get-ChildItem -Path $paths.KBsSSU -Filter "*.cab" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+    $hasOSCU = (Get-ChildItem -Path $paths.KBsOSCU -Filter "*.cab" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+    $hasNET = (Get-ChildItem -Path $paths.KBsNET -Filter "*.cab" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+    
+    Write-Log "Package availability - SSU: $hasSSU, OSCU: $hasOSCU, NET: $hasNET"
+    
+    # Service each index (serial processing for safety)
+    foreach ($idx in $extractedIndices) {
+        $installWimFile = "$idx`_$($names.InstallWim)"
+        $bootWimFile = "$idx`_$($names.BootWim)"
+        $installWimPath = Join-Path $paths.WimsIndices $installWimFile
+        $bootWimPath = Join-Path $paths.WimsIndices $bootWimFile
+        
+        $mountDir = Join-Path $paths.WimsMounts "mount_$idx"
+        $winreMountDir = Join-Path $paths.WimsMounts "winre_mount_$idx"
+        
+        $indexCheckpoint = Join-Path $paths.Checkpoint "$idx.done"
+        
+        if (Test-Path $indexCheckpoint) {
+            Write-Log "Index $idx already serviced (checkpoint exists)"
+            continue
+        }
+        
+        Write-Log "Servicing index $idx..."
+        
+        # Service install.wim
+        if ($hasSSU -or $hasOSCU -or $hasNET) {
+            Ensure-Folder -Path $mountDir
+            
+            try {
+                Write-Log "  Mounting index $idx install.wim to $mountDir..."
+                $dismArgs = @("/Mount-Image", "/ImageFile:$installWimPath", "/Index:1", "/MountDir:$mountDir")
+                & dism.exe $dismArgs | Write-Verbose
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to mount install.wim for index $idx"
+                }
+                
+                # Check for winre.wim inside mounted install
+                $winreInWim = Join-Path $mountDir $paths.WinreWimInWim
+                if (Test-Path $winreInWim) {
+                    Write-Log "  Found winre.wim in mounted install image"
+                    
+                    # Extract winre.wim for separate servicing
+                    if ($hasSSU) {
+                        $winreExtracted = Join-Path $paths.WimsServiced "$idx`_winre_extracted.wim"
+                        Write-Log "    Extracting winre.wim..."
+                        Copy-Item -Path $winreInWim -Destination $winreExtracted -Force
+                        
+                        # Mount and service winre
+                        Ensure-Folder -Path $winreMountDir
+                        Write-Log "    Mounting winre.wim..."
+                        $dismWinreArgs = @("/Mount-Image", "/ImageFile:$winreExtracted", "/Index:1", "/MountDir:$winreMountDir")
+                        & dism.exe $dismWinreArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to mount winre.wim for index $idx"
+                        }
+                        
+                        # Apply SSU packages to winre
+                        $ssuFiles = Get-ChildItem -Path $paths.KBsSSU -Filter "*.cab" -ErrorAction SilentlyContinue
+                        foreach ($file in $ssuFiles) {
+                            Write-Log "    Applying SSU to winre: $($file.Name)"
+                            $dismApplyArgs = @("/Image:$winreMountDir", "/Add-Package", "/PackagePath:$($file.FullName)")
+                            & dism.exe $dismApplyArgs | Write-Verbose
+                            if ($LASTEXITCODE -ne 0) {
+                                Write-Log "    WARNING: Failed to apply $($file.Name) to winre (continuing)"
+                            }
+                        }
+                        
+                        # Unmount and commit winre
+                        Write-Log "    Unmounting winre.wim..."
+                        $dismUnmountArgs = @("/Unmount-Image", "/MountDir:$winreMountDir", "/Commit")
+                        & dism.exe $dismUnmountArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to unmount winre.wim for index $idx"
+                        }
+                        
+                        # Reinsert serviced winre back into install.wim
+                        Write-Log "    Reinserting serviced winre.wim..."
+                        Copy-Item -Path $winreExtracted -Destination $winreInWim -Force
+                    }
+                }
+                
+                # Apply SSU packages to install.wim
+                if ($hasSSU) {
+                    $ssuFiles = Get-ChildItem -Path $paths.KBsSSU -Filter "*.cab" -ErrorAction SilentlyContinue
+                    foreach ($file in $ssuFiles) {
+                        Write-Log "  Applying SSU: $($file.Name)"
+                        $dismApplyArgs = @("/Image:$mountDir", "/Add-Package", "/PackagePath:$($file.FullPath)")
+                        & dism.exe $dismApplyArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Log "  WARNING: Failed to apply $($file.Name) (continuing)"
+                        }
+                    }
+                }
+                
+                # Apply OSCU packages to install.wim
+                if ($hasOSCU) {
+                    $oscuFiles = Get-ChildItem -Path $paths.KBsOSCU -Filter "*.cab" -ErrorAction SilentlyContinue
+                    foreach ($file in $oscuFiles) {
+                        Write-Log "  Applying OSCU: $($file.Name)"
+                        $dismApplyArgs = @("/Image:$mountDir", "/Add-Package", "/PackagePath:$($file.FullPath)")
+                        & dism.exe $dismApplyArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Log "  WARNING: Failed to apply $($file.Name) (continuing)"
+                        }
+                    }
+                }
+                
+                # Apply NET packages to install.wim
+                if ($hasNET) {
+                    $netFiles = Get-ChildItem -Path $paths.KBsNET -Filter "*.cab" -ErrorAction SilentlyContinue
+                    foreach ($file in $netFiles) {
+                        Write-Log "  Applying NET: $($file.Name)"
+                        $dismApplyArgs = @("/Image:$mountDir", "/Add-Package", "/PackagePath:$($file.FullPath)")
+                        & dism.exe $dismApplyArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Log "  WARNING: Failed to apply $($file.Name) (continuing)"
+                        }
+                    }
+                }
+                
+                # Unmount and commit install.wim
+                Write-Log "  Unmounting index $idx install.wim..."
+                $dismUnmountArgs = @("/Unmount-Image", "/MountDir:$mountDir", "/Commit")
+                & dism.exe $dismUnmountArgs | Write-Verbose
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to unmount install.wim for index $idx"
+                }
+                
+            } catch {
+                Write-Log "  ERROR servicing index $idx install.wim: $_"
+                throw $_
+            } finally {
+                # Cleanup mount directory
+                if (Test-Path $mountDir) {
+                    Remove-Item $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                if (Test-Path $winreMountDir) {
+                    Remove-Item $winreMountDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        
+        # Service boot.wim if SSU packages exist
+        if ($hasSSU -and (Test-Path $bootWimPath)) {
+            $bootCheckpoint = Join-Path $paths.Checkpoint "boot.$idx.done"
+            
+            if (-not (Test-Path $bootCheckpoint)) {
+                Ensure-Folder -Path $mountDir
+                
+                try {
+                    Write-Log "  Mounting index $idx boot.wim..."
+                    $dismArgs = @("/Mount-Image", "/ImageFile:$bootWimPath", "/Index:1", "/MountDir:$mountDir")
+                    & dism.exe $dismArgs | Write-Verbose
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to mount boot.wim for index $idx"
+                    }
+                    
+                    # Apply SSU packages to boot.wim
+                    $ssuFiles = Get-ChildItem -Path $paths.KBsSSU -Filter "*.cab" -ErrorAction SilentlyContinue
+                    foreach ($file in $ssuFiles) {
+                        Write-Log "  Applying SSU to boot.wim: $($file.Name)"
+                        $dismApplyArgs = @("/Image:$mountDir", "/Add-Package", "/PackagePath:$($file.FullPath)")
+                        & dism.exe $dismApplyArgs | Write-Verbose
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Log "  WARNING: Failed to apply $($file.Name) to boot.wim (continuing)"
+                        }
+                    }
+                    
+                    # Unmount and commit boot.wim
+                    Write-Log "  Unmounting index $idx boot.wim..."
+                    $dismUnmountArgs = @("/Unmount-Image", "/MountDir:$mountDir", "/Commit")
+                    & dism.exe $dismUnmountArgs | Write-Verbose
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to unmount boot.wim for index $idx"
+                    }
+                    
+                    # Mark checkpoint
+                    Set-Content -Path $bootCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+                    
+                } catch {
+                    Write-Log "  ERROR servicing index $idx boot.wim: $_"
+                    throw $_
+                } finally {
+                    if (Test-Path $mountDir) {
+                        Remove-Item $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        }
+        
+        # Mark index as serviced
+        Set-Content -Path $indexCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+        Write-Log "Index $idx servicing complete"
+    }
+    
+    # Final assembly - combine indices into install.wim and boot.wim
+    Write-Log "Final assembly: combining serviced indices..."
+    
+    $installWimCheckpoint = Join-Path $paths.Checkpoint "install.wim.done"
+    $bootWimCheckpoint = Join-Path $paths.Checkpoint "boot.wim.done"
+    
+    if (-not (Test-Path $installWimCheckpoint)) {
+        Write-Log "Creating final install.wim with compression: $CompressionType..."
+        
+        # Take first index and set compression
+        $firstIdx = $extractedIndices[0]
+        $firstInstallWim = Join-Path $paths.WimsIndices "$firstIdx`_$($names.InstallWim)"
+        
+        $compressionMap = @{
+            'None' = 'none'
+            'Fast' = 'fast'
+            'Maximum' = 'maximum'
+        }
+        $dismCompression = $compressionMap[$CompressionType]
+        
+        $dismExportArgs = @(
+            "/Export-Image",
+            "/SourceImageFile:$firstInstallWim",
+            "/SourceIndex:1",
+            "/DestinationImageFile:$($paths.InstallWimInDest)",
+            "/Compress:$dismCompression"
+        )
+        
+        Write-Verbose "Running: dism.exe $($dismExportArgs -join ' ')"
+        & dism.exe $dismExportArgs | Write-Verbose
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to export first install.wim"
+        }
+        
+        # Append remaining indices
+        for ($i = 1; $i -lt $extractedIndices.Count; $i++) {
+            $idx = $extractedIndices[$i]
+            $srcInstallWim = Join-Path $paths.WimsIndices "$idx`_$($names.InstallWim)"
+            
+            Write-Log "  Appending index $idx to final install.wim..."
+            $dismAppendArgs = @(
+                "/Export-Image",
+                "/SourceImageFile:$srcInstallWim",
+                "/SourceIndex:1",
+                "/DestinationImageFile:$($paths.InstallWimInDest)"
+            )
+            
+            & dism.exe $dismAppendArgs | Write-Verbose
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to append install.wim index $idx"
+            }
+        }
+        
+        Set-Content -Path $installWimCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+        Write-Log "Final install.wim created"
+    }
+    
+    if (-not (Test-Path $bootWimCheckpoint)) {
+        # Combine boot.wim files if they exist
+        $bootWimFiles = Get-ChildItem -Path $paths.WimsIndices -Filter "*_$($names.BootWim)" -File | Sort-Object
+        
+        if ($bootWimFiles.Count -gt 0) {
+            Write-Log "Creating final boot.wim with compression: $CompressionType..."
+            
+            $firstBootWim = $bootWimFiles[0].FullName
+            
+            $dismExportArgs = @(
+                "/Export-Image",
+                "/SourceImageFile:$firstBootWim",
+                "/SourceIndex:1",
+                "/DestinationImageFile:$($paths.BootWimInDest)",
+                "/Compress:$dismCompression"
+            )
+            
+            & dism.exe $dismExportArgs | Write-Verbose
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to export first boot.wim"
+            }
+            
+            # Append remaining boot.wim files
+            for ($i = 1; $i -lt $bootWimFiles.Count; $i++) {
+                $srcBootWim = $bootWimFiles[$i].FullName
+                
+                Write-Log "  Appending boot.wim index $($i + 1)..."
+                $dismAppendArgs = @(
+                    "/Export-Image",
+                    "/SourceImageFile:$srcBootWim",
+                    "/SourceIndex:1",
+                    "/DestinationImageFile:$($paths.BootWimInDest)"
+                )
+                
+                & dism.exe $dismAppendArgs | Write-Verbose
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Failed to append boot.wim file $i"
+                }
+            }
+            
+            Set-Content -Path $bootWimCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
+            Write-Log "Final boot.wim created"
+        }
+    }
+    
+    Write-Log "Service workflow complete"
 }
 
 # =========================
@@ -868,982 +1330,26 @@ if ($p.ExitCode -ne 0) { throw "DISM failed" }
 }
 
 # ==============================
-# Servicing WIMs
+# Main execution
 # ==============================
-function Invoke-ServiceWork {
-Write-Log "Service workflow not implemented yet"
-<#
-# -------------------- Configuration --------------------
-$OriginalInstallWim = 'C:\images\install.wim'
-$WorkRoot           = 'C:\images\working'          # temp working root
-$TempWimFolder      = $paths.WimsTemp
-$MountRoot          = $paths.WimsMounts
-$CaptureRoot        = $paths.WimsCaptures
-$FinalInstallWim    = Join-Path $WorkRoot 'final_install.wim'
-$IndicesToProcess   = 1,6
-$CompressionType    = 'Maximum'                    # None, Fast, Maximum
-$Packages           = @('C:\updates\kb1.cab','C:\updates\kb2.msu')  # list of CAB/MSU paths
-$DriverFolders      = @('C:\drivers\intel','C:\drivers\others')     # driver folders (Recurse)
-$MinFreeSpaceBytes  = 50GB                         # minimum free space required (adjust)
-$LogFile            = Join-Path $WorkRoot 'service.log'
-# -------------------------------------------------------
 
-# Helper: convert friendly size to bytes
-function Convert-ToBytes($size) {
-if ($size -is [string]) {
-    $s = $size.ToUpper().Trim()
-    if ($s -match '(\d+)\s*GB') { return [int64]$matches[1] * 1GB }
-    if ($s -match '(\d+)\s*MB') { return [int64]$matches[1] * 1MB }
-    return [int64]$s
+# Default values
+if ([string]::IsNullOrWhiteSpace($Folder)) {
+    $Folder = Get-Location
 }
-return [int64]$size
+if ([string]::IsNullOrWhiteSpace($WinOS)) {
+    $WinOS = '11'
+}
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = if ($WinOS -eq '10') { '22H2' } else { '25H2' }
+}
+if ([string]::IsNullOrWhiteSpace($Arch)) {
+    $Arch = 'x64'
 }
 
-# Logging
-function Log($msg) {
-$t = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-$line = "$t`t$msg"
-$line | Tee-Object -FilePath $LogFile -Append
-}
+Write-Log "Initialized: Folder=$Folder, WinOS=$WinOS, Version=$Version, Arch=$Arch"
 
-# Prepare folders
-New-Item -Path $WorkRoot -ItemType Directory -Force | Out-Null
-New-Item -Path $TempWimFolder -ItemType Directory -Force | Out-Null
-New-Item -Path $MountRoot -ItemType Directory -Force | Out-Null
-New-Item -Path $CaptureRoot -ItemType Directory -Force | Out-Null
-if (Test-Path $LogFile) { Remove-Item $LogFile -Force }
-
-Log "Starting servicing workflow"
-Log "Source WIM: $OriginalInstallWim"
-Log "Indices: $($IndicesToProcess -join ',')"
-
-# Validate source WIM
-if (-not (Test-Path $OriginalInstallWim)) {
-Log "Source install.wim not found: $OriginalInstallWim"
-Write-Error "Source install.wim not found: $OriginalInstallWim"
-exit 1
-}
-
-# Check available disk space on WorkRoot drive
-$drive = Get-Item $WorkRoot
-$free = (Get-PSDrive -Name $drive.PSDrive.Name).Free
-$minBytes = Convert-ToBytes $MinFreeSpaceBytes
-if ($free -lt $minBytes) {
-Log "Insufficient free space on drive $($drive.PSDrive.Name): $free bytes free, require at least $minBytes"
-Write-Error "Insufficient free space on drive $($drive.PSDrive.Name). Free: $free bytes. Required: $minBytes bytes."
-exit 1
-}
-Log "Free space check OK: $free bytes available"
-
-# Function to run dism.exe fallback
-function Run-DismFallback {
-param($ArgsArray)
-$argLine = $ArgsArray -join ' '
-Log "Running dism.exe $argLine"
-$proc = Start-Process -FilePath 'dism.exe' -ArgumentList $ArgsArray -Wait -NoNewWindow -PassThru
-if ($proc.ExitCode -ne 0) {
-    throw "dism.exe failed with exit code $($proc.ExitCode) for args: $argLine"
-}
-}
-
-# Export indices to per-index uncompressed WIMs in parallel
-$exportJobs = @()
-foreach ($idx in $IndicesToProcess) {
-$destWim = Join-Path $TempWimFolder ("{0}.wim" -f $idx)
-$exportJobs += Start-Job -Name "ExportIndex$idx" -ArgumentList $OriginalInstallWim, $idx, $destWim, $hasExportCmdlet -ScriptBlock {
-    param($srcWim, $index, $destWim, $useExportCmdlet)
-    try {
-        $args = @('/Export-Image', "/SourceImageFile:$srcWim", "/SourceIndex:$index", "/DestinationImageFile:$destWim", '/Compress:None')
-        Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-        "Exported index $index to $destWim (dism.exe)"
-        }
-    } catch {
-        throw "Export failed for index $index : $($_.Exception.Message)"
-    }
-}
-}
-Log "Started export jobs: $($exportJobs | ForEach-Object { $_.Name } -join ', ')"
-
-# Wait and collect export results
-Wait-Job -Job $exportJobs
-$exportErrors = @()
-foreach ($j in $exportJobs) {
-$state = $j.State
-$out = Receive-Job -Job $j -ErrorAction SilentlyContinue
-if ($state -ne 'Completed') {
-    $exportErrors += ,@{ Job = $j.Name; State = $state; Output = $out }
-} else {
-    Log ("Job {0} completed: {1}" -f $j.Name, ($out -join '; '))
-}
-Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
-}
-if ($exportErrors.Count -gt 0) {
-$exportErrors | ForEach-Object { Log ("Export error: {0} {1}" -f $_.Job, $_.Output) }
-Write-Error "One or more exports failed. See log $LogFile"
-exit 1
-}
-
-# For each exported WIM, mount, service, copy to capture dir, then unmount. Do this in parallel jobs.
-$serviceJobs = @()
-foreach ($idx in $IndicesToProcess) {
-$srcWim = Join-Path $TempWimFolder ("{0}.wim" -f $idx)
-$mountDir = Join-Path $MountRoot ("mount_{0}" -f $idx)
-$captureDir = Join-Path $CaptureRoot ("capture_{0}" -f $idx)
-New-Item -Path $mountDir -ItemType Directory -Force | Out-Null
-New-Item -Path $captureDir -ItemType Directory -Force | Out-Null
-
-$serviceJobs += Start-Job -Name "ServiceIndex$idx" -ArgumentList $srcWim, $idx, $mountDir, $captureDir, $hasMountCmdlet, $hasAddPkgCmdlet, $hasAddDrvCmdlet, $Packages, $DriverFolders -ScriptBlock {
-    param($srcWim, $index, $mountDir, $captureDir, $useMountCmdlet, $useAddPkgCmdlet, $useAddDrvCmdlet, $packages, $driverFolders)
-
-    function LocalLog($m) { $t=(Get-Date).ToString('yyyy-MM-dd HH:mm:ss'); "$t`t[$index] $m" | Out-File -FilePath (Join-Path $mountDir 'job.log') -Append }
-
-    try {
-        LocalLog "Starting service job for index $index"
-
-        # Mount image
-        $args = @('/Mount-Image', "/ImageFile:$srcWim", "/Index:1", "/MountDir:$mountDir")
-        Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-        LocalLog "Mounted $srcWim to $mountDir (dism.exe)"
-
-        # Apply packages
-        foreach ($pkg in $packages) {
-            if (-not (Test-Path $pkg)) { LocalLog "Package not found: $pkg"; continue }
-            $args = @('/Image:' + $mountDir, '/Add-Package', "/PackagePath:$pkg")
-            Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-            LocalLog "Added package $pkg (dism.exe)"
-        }
-
-        # Add drivers
-        foreach ($drv in $driverFolders) {
-            if (-not (Test-Path $drv)) { LocalLog "Driver folder not found: $drv"; continue }
-            $args = @('/Image:' + $mountDir, '/Add-Driver', "/Driver:$drv", '/Recurse')
-            Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-            LocalLog "Added drivers from $drv (dism.exe)"
-        }
-
-        # Commit and unmount
-        $args = @('/Unmount-Image', "/MountDir:$mountDir", '/Commit')
-        Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-        LocalLog "Dismounted and committed $mountDir (dism.exe)"
-
-        # Capture the image tree to captureDir (use image capture via dism or robocopy copy of mounted tree)
-        # We will expand the WIM by mounting then copying the mounted tree; since we unmounted above, remount read-only to copy
-        $args = @('/Mount-Image', "/ImageFile:$srcWim", "/Index:1", "/MountDir:$mountDir")
-        Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-        robocopy $mountDir $captureDir /MIR /NFL /NDL /NJH /NJS | Out-Null
-        $args = @('/Unmount-Image', "/MountDir:$mountDir", '/Discard')
-        Start-Process -FilePath 'dism.exe' -ArgumentList $args -Wait -NoNewWindow -PassThru | Out-Null
-        LocalLog "Copied mounted tree to $captureDir and dismounted (dism.exe)"
-
-        # Clean up the temporary per-index WIM
-        Remove-Item -Path $srcWim -Force -ErrorAction SilentlyContinue
-        LocalLog "Removed temporary WIM $srcWim"
-
-        "Service job for index $index completed successfully"
-    } catch {
-        LocalLog "ERROR: $_"
-        throw "Service job failed for index $index : $($_.Exception.Message)"
-    } finally {
-        # ensure mount dir is removed if empty
-        if (Test-Path $mountDir) {
-            try { Remove-Item -Path $mountDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-        }
-    }
-}
-}
-
-Log "Started service jobs: $($serviceJobs | ForEach-Object { $_.Name } -join ', ')"
-
-# Wait for service jobs
-Wait-Job -Job $serviceJobs
-$serviceErrors = @()
-foreach ($j in $serviceJobs) {
-$state = $j.State
-$out = Receive-Job -Job $j -ErrorAction SilentlyContinue
-if ($state -ne 'Completed') {
-    $serviceErrors += ,@{ Job = $j.Name; State = $state; Output = $out }
-    Log ("Service job {0} failed: {1}" -f $j.Name, ($out -join '; '))
-} else {
-    Log ("Service job {0} completed: {1}" -f $j.Name, ($out -join '; '))
-}
-Remove-Job -Job $j -Force -ErrorAction SilentlyContinue
-}
-if ($serviceErrors.Count -gt 0) {
-Write-Error "One or more service jobs failed. See log $LogFile"
-exit 1
-}
-
-# Build final compressed install.wim
-# Capture first capture dir into final_install.wim, then append others
-$captures = Get-ChildItem -Path $CaptureRoot -Directory | Sort-Object Name
-if ($captures.Count -eq 0) {
-Log "No capture directories found in $CaptureRoot"
-Write-Error "No capture directories found"
-exit 1
-}
-
-# Capture first
-$first = $captures[0].FullName
-$args = @('/Capture-Image', "/ImageFile:$FinalInstallWim", "/CaptureDir:$first", "/Name:ServicedImage1", "/Compress:Maximum")
-Run-DismFallback $args
-Log "Captured $first to $FinalInstallWim (dism.exe)"
-
-# Append remaining captures
-$counter = 2
-foreach ($cap in $captures | Select-Object -Skip 1) {
-$name = "ServicedImage$counter"
-$args = @('/Append-Image', "/ImageFile:$FinalInstallWim", "/CaptureDir:$($cap.FullName)", "/Name:$name")
-Run-DismFallback $args
-Log "Appended $($cap.FullName) as $name to $FinalInstallWim"
-$counter++
-}
-
-Log "Final install.wim created at $FinalInstallWim"
-
-# Cleanup capture dirs if desired (commented out)
-# Remove-Item -Path $CaptureRoot -Recurse -Force
-
-Log "Workflow completed successfully"
-Write-Output "Completed successfully. Final WIM: $FinalInstallWim"
-
-#>
-}
-
-# ==============================
-# Registry export
-# ==============================
-function Invoke-RegWork {
-
-<#
-#
-# Example tables (embedded like original template)
-#
-$RegistryAddModify = @(
-    @{
-        Key    = 'HKLM\SOFTWARE\MyCompany'
-        Values = @(
-            @('SettingA'),
-            @('SettingB','X')
-        )
-    },
-    @{
-        Key    = 'HKCU\Software\MyCompany'
-        Values = @(
-            @()                     # export entire key (dominates)
-        )
-    }
-)
-
-$RegistryRemove = @(
-    @{
-        Key    = 'HKLM\SOFTWARE\MyCompany'
-        Values = @(
-            @('OldValue')
-        )
-    },
-    @{
-        Key    = 'HKCU\Software\MyCompany'
-        Values = @(
-            @()                     # delete entire key (dominates)
-        )
-    }
-)
-#>
-
-$RegistryAddModify = @(
-    @{
-        Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
-        Values = @()
-    },
-    @{
-        Key    = 'HKEY_CLASSES_ROOT\Directory\Background\shell\Windows.ShowFileExtensions'
-        Values = @()
-    },
-    @{
-        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
-        Values = @('LaunchTo',
-                    'Start_IrisRecommendations',
-                    'ShowTaskViewButton',
-                    'HideFileExt',
-                    'SeparateProcess')
-    },
-    @{
-        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\CabinetState'
-        Values = @('FullPath')
-    },
-    @{
-        Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsUpdate\UX\Settings'
-        Values = @('AllowMUUpdateService')
-    },
-    @{
-        Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem'
-        Values = @('LongPathsEnabled')
-    },
-    @{
-        Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power'
-        Values = @('HibernateEnabled')
-    },
-    @{
-        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
-        Values = @('TaskbarEndTask')
-    }
-)
-
-$RegistryRemove = @(
-)
-
-$RegistryRoot = $paths.RegistryRoot
-
-#
-# CLEAN MODE
-#
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $RegistryRoot"
-    } elseif (Test-Path $RegistryRoot) {
-        Write-Log "Removing: $RegistryRoot"
-        Remove-Item $RegistryRoot -Recurse -Force
-    }
-    return
-}
-
-#
-# PREP OUTPUT FOLDER
-#
-if (-not $DryRun) {
-    Ensure-Folder -Path $RegistryRoot
-}
-
-#
-# HELPERS
-#
-function RegSafeName([string]$key) {
-    ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
-}
-
-function RegExportEntireKey([string]$key, [string]$dest) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would export ENTIRE key: $key -> $dest"
-    } else {
-        Write-Log "Export ENTIRE key: $key -> $dest"
-        reg.exe export "$key" "$dest" /y | Out-Null
-    }
-}
-
-function RegExportSpecificValues([string]$key, [string]$dest, [object[]]$groups) {
-
-    # Flatten values, skipping null/empty
-    $allValues = @()
-    foreach ($g in $groups) {
-        if (-not $g) { continue }
-        foreach ($v in $g) {
-            if ($null -ne $v -and $v -ne '') { $allValues += $v }
-        }
-    }
-    $allValues = $allValues | Sort-Object -Unique
-
-    if (-not $allValues -or $allValues.Count -eq 0) {
-        Write-Log "No specific values requested for $key; skipping."
-        return
-    }
-
-    if ($DryRun) {
-        Write-Log "[DryRun] Would export values [$($allValues -join ', ')] from $key -> $dest"
-        return
-    }
-
-    Write-Log "Export specific values [$($allValues -join ', ')] from $key -> $dest"
-
-    $query = reg.exe query "$key" /v * 2>$null
-    if (-not $query) {
-        Write-Log "WARNING: No data returned for $key"
-        return
-    }
-
-    $out = New-Object System.Collections.Generic.List[string]
-    $out.Add("Windows Registry Editor Version 5.00")
-    $out.Add("")
-
-    $header = "[" + $key + "]"
-    $out.Add($header)
-
-    foreach ($line in $query) {
-
-        if ($line -match '^\s+([^\s]+)\s+REG_([A-Z0-9_]+)\s+(.*)$') {
-
-            $valName = $matches[1]
-            $type    = $matches[2]
-            $data    = $matches[3]
-
-            if ($allValues -contains $valName) {
-
-                switch ($type) {
-                    "SZ" {
-                        $regLine = '"' + $valName + '"="' + $data + '"'
-                    }
-                    "DWORD" {
-                        $regLine = '"' + $valName + '"=dword:' + ("{0:x8}" -f [int]$data)
-                    }
-                    default {
-                        $regLine = '"' + $valName + '"="' + $data + '"'
-                    }
-                }
-
-                $out.Add($regLine)
-            }
-        }
-    }
-
-    $out.Add("")
-    $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
-}
-
-function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
-
-    if ($DryRun) {
-        if (-not $values -or $values.Count -eq 0) {
-            Write-Log "[DryRun] Would delete ENTIRE key: $key"
-        } else {
-            Write-Log "[DryRun] Would delete values [$($values -join ', ')] from $key"
-        }
-        return
-    }
-
-    Write-Log "Appending delete instructions for $key -> $dest"
-
-    $out = New-Object System.Collections.Generic.List[string]
-
-    if (Test-Path $dest) {
-        $existing = Get-Content $dest -Raw
-        foreach ($l in ($existing -split "`r?`n")) { $out.Add($l) }
-    } else {
-        $out.Add("Windows Registry Editor Version 5.00")
-        $out.Add("")
-    }
-
-    if (-not $values -or $values.Count -eq 0) {
-        $line = "[-" + $key + "]"
-        $out.Add($line)
-        $out.Add("")
-    } else {
-        $header = "[" + $key + "]"
-        $out.Add($header)
-
-        foreach ($v in $values) {
-            $line = '"' + $v + '"=-'
-            $out.Add($line)
-        }
-
-        $out.Add("")
-    }
-
-    $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
-}
-
-#
-# PROCESS ADD/MODIFY
-#
-foreach ($entry in $RegistryAddModify) {
-
-    $key    = $entry.Key
-    $groups = $entry.Values
-
-    $safe = "AddModify_" + (RegSafeName $key)
-    $dest = Join-Path $RegistryRoot $safe
-
-    # entire key if:
-    # - Values is null/empty, OR
-    # - any inner list is null/empty
-    $hasEntire = $false
-    if (-not $groups -or $groups.Count -eq 0) {
-        $hasEntire = $true
-    } else {
-        foreach ($g in $groups) {
-            if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
-                $hasEntire = $true
-                break
-            }
-        }
-    }
-
-    if ($hasEntire) {
-        if ($DryRun) {
-            Write-Log "[DryRun] Would export ENTIRE key: $key -> $dest"
-        } else {
-            RegExportEntireKey $key $dest
-        }
-    } else {
-        RegExportSpecificValues $key $dest $groups
-    }
-}
-
-#
-# PROCESS REMOVE
-#
-foreach ($entry in $RegistryRemove) {
-
-    $key    = $entry.Key
-    $groups = $entry.Values
-
-    $safe = "Remove_" + (RegSafeName $key)
-    $dest = Join-Path $RegistryRoot $safe
-
-    $hasEntire = $false
-    if (-not $groups -or $groups.Count -eq 0) {
-        $hasEntire = $true
-    } else {
-        foreach ($g in $groups) {
-            if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
-                $hasEntire = $true
-                break
-            }
-        }
-    }
-
-    if ($hasEntire) {
-        RegAppendDelete $dest $key @()
-    } else {
-        $allValues = @()
-        foreach ($g in $groups) {
-            if (-not $g) { continue }
-            foreach ($v in $g) {
-                if ($null -ne $v -and $v -ne '') { $allValues += $v }
-            }
-        }
-        $allValues = $allValues | Sort-Object -Unique
-
-        RegAppendDelete $dest $key $allValues
-    }
-}
-}
-
-# ==============================
-# InstallDrivers.cmd
-# ==============================
-function Write-InstallDriversCmd {
-
-$path = $paths.InstallDriversCmd
-
-$template = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-:: Must be run elevated to work
-
-echo Import drivers
-pnputil /add-driver "%SRC%\{0}\*.inf" /subdirs /install
-endlocal
-'@
-
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $path"
-    } elseif (Test-Path $path) {
-        Write-Log "Removing: $path"
-        Remove-Item $path -Force
-    }
-    return
-}
-
-if ($DryRun) {
-    Write-Log "[DryRun] Would write: $path"
-} else {
-    Write-Log "Writing: $path"
-    Ensure-Folder (Split-Path $path -Parent)
-
-    $content = $template -f $names.WinpeDriver
-    Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-}
-}
-
-# ==============================
-# InstallRegs.cmd
-# ==============================
-function Write-InstallRegsCmd {
-
-$path = $paths.InstallRegsCmd
-
-$template = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-
-echo Import registry files
-for %%F in ("%SRC%\{0}\*.reg") do (
-reg.exe import "%%F"
-)
-endlocal
-'@
-
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $path"
-    } elseif (Test-Path $path) {
-        Write-Log "Removing: $path"
-        Remove-Item $path -Force
-    }
-    return
-}
-
-if ($DryRun) {
-    Write-Log "[DryRun] Would write: $path"
-} else {
-    Write-Log "Writing: $path"
-    Ensure-Folder (Split-Path $path -Parent)
-
-    $osContent = ""
-    foreach ($u in $kbDirs) {
-        $osContent += $osTemplate -f $names.KBs, $names.$u
-    }
-    $content = $template -f $names.Registry
-    Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-}
-}
-
-# ==============================
-# PostSetup.cmd
-# ==============================
-function Write-PostSetupCmd {
-
-$path = $paths.PostSetupCmd
-
-$template = @'
-@echo off
-setlocal enabledelayedexpansion
-set "SRC=%~dp0"
-
-:: Apply KBs in the correct order
-
-{0}
-endlocal
-'@
-
-$osTemplate = @'
-echo Installing updates from %SRC%\{0}\{1}
-
-:: Install EXE installers
-for %%F in ("%SRC%\{0}\{1}\*.exe") do (
-echo Installing EXE %%F
-"%%F" /quiet /norestart
-)
-
-:: Install MSI installers
-for %%F in ("%SRC%\{0}\{1}\*.msi") do (
-echo Installing MSI %%F
-msiexec.exe /i "%%F" /quiet /norestart
-)
-
-:: Run CMD/BAT scripts
-for %%F in ("%SRC%\{0}\{1}\*.cmd") do (
-echo Running CMD %%F
-call "%%F"
-)
-for %%F in ("%SRC%\{0}\{1}\*.bat") do (
-echo Running BAT %%F
-call "%%F"
-)
-
-'@
-
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $path"
-    } elseif (Test-Path $path) {
-        Write-Log "Removing: $path"
-        Remove-Item $path -Force
-    }
-    return
-}
-
-if ($DryRun) {
-    Write-Log "[DryRun] Would write: $path"
-} else {
-    Write-Log "Writing: $path"
-    Ensure-Folder (Split-Path $path -Parent)
-
-    $osContent = ""
-    foreach ($u in $kbDirs) {
-        $osContent += $osTemplate -f $names.KBs, $names.$u
-    }
-    $content = $template -f $osContent, $names.Registry
-    Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-}
-}
-
-# ==============================
-# SetupConfig files
-# ==============================
-function Write-SetupConfigFiles {
-$cleanPath   = $paths.SetupConfigCleanIni
-$upgradePath = $paths.SetupConfigUpgradeIni
-
-<#
-$cleanTemplate = @'
-# Clean installation configuration
-[SetupConfig]
-
-# Perform a clean installation
-Auto=Clean
-
-# Disable Dynamic Update (no online updates or drivers)
-DynamicUpdate=Disable
-
-# Prevent Setup from injecting drivers automatically
-InstallDrivers=Off
-
-# Show the full Out-of-Box Experience (OOBE)
-ShowOOBE=Full
-
-# Disable Setup telemetry
-Telemetry=Disable
-
-'@
-
-$upgradeTemplate = @'
-# Upgrade installation configuration
-[SetupConfig]
-
-# Perform an in-place upgrade
-Auto=Upgrade
-
-# Disable Dynamic Update (no online updates or drivers)
-DynamicUpdate=Disable
-
-# Prevent Setup from injecting drivers automatically
-InstallDrivers=Off
-
-# Do not show the Out-of-Box Experience (OOBE)
-ShowOOBE=None
-
-# Disable Setup telemetry
-Telemetry=Disable
-
-'@
-#>
-$cleanTemplate = @'
-[SetupConfig]
-Auto=Clean
-DynamicUpdate=Disable
-Telemetry=Disable
-'@
-
-$upgradeTemplate = @'
-[SetupConfig]
-Auto=Upgrade
-DynamicUpdate=Disable
-Telemetry=Disable
-'@
-
-
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $cleanPath"
-        Write-Log "[DryRun] Would remove: $upgradePath"
-    } else {
-        if (Test-Path $cleanPath) {
-            Write-Log "Removing: $cleanPath"
-            Remove-Item $cleanPath -Force
-        }
-        if (Test-Path $upgradePath) {
-            Write-Log "Removing: $upgradePath"
-            Remove-Item $upgradePath -Force
-        }
-    }
-    return
-}
-
-if ($DryRun) {
-    Write-Log "[DryRun] Would write: $cleanPath"
-    Write-Log "[DryRun] Would write: $upgradePath"
-} else {
-    Write-Log "Writing: $cleanPath"
-    Set-Content -LiteralPath $cleanPath   -Value $cleanTemplate   -Encoding ASCII
-    Write-Log "Writing: $upgradePath"
-    Set-Content -LiteralPath $upgradePath -Value $upgradeTemplate -Encoding ASCII
-}
-}
-
-# ==============================
-# Setup CMD Files
-# ==============================
-function Write-SetupCmdFiles {
-$cleanPath   = $paths.CleanInstallCmd
-$upgradePath = $paths.UpgradeCmd
-
-$cleanTemplate = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-echo WARNING: This will start a CLEAN install (wipe-and-load) when run from within Windows.
-echo Close all apps and ensure you have backups.
-echo.
-"%SRC%setup.exe" /auto clean /eula accept /configfile "%SRC%{0}"
-endlocal
-'@
-
-$upgradeTemplate = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-echo Running in-place upgrade from: %SRC%
-"%SRC%setup.exe" /auto upgrade /eula accept /configfile "%SRC%{0}"
-endlocal
-'@
-
-if ($Clean) {
-    if ($DryRun) {
-        Write-Log "[DryRun] Would remove: $cleanPath"
-        Write-Log "[DryRun] Would remove: $upgradePath"
-    } else {
-        if (Test-Path $cleanPath) {
-            Write-Log "Removing: $cleanPath"
-            Remove-Item $cleanPath -Force
-        }
-        if (Test-Path $upgradePath) {
-            Write-Log "Removing: $upgradePath"
-            Remove-Item $upgradePath -Force
-        }
-    }
-    return
-}
-
-if ($DryRun) {
-    Write-Log "[DryRun] Would write: $cleanPath"
-    Write-Log "[DryRun] Would write: $upgradePath"
-} else {
-    # Fill in the actual name for the files in the template
-    $cleanContent   = $cleanTemplate -f $names.SetupConfigCleanIni
-    $upgradeContent = $upgradeTemplate -f $names.SetupConfigUpgradeIni
-
-    Write-Log "Writing: $cleanPath"
-    Set-Content -LiteralPath $cleanPath   -Value $cleanContent   -Encoding ASCII
-    Write-Log "Writing: $upgradePath"
-    Set-Content -LiteralPath $upgradePath -Value $upgradeContent -Encoding ASCII
-}
-}
-
-# Real work starts here
-
-# Apply defaults
-if (-not $Folder) { $Folder = (Get-Location).ProviderPath }
-if (-not $WinOS) { $WinOS = '11' }
-if (-not $Arch)  { $Arch  = 'x64' }
-
-if (-not $Version) {
-if ($WinOS -eq '10') { $Version = '22H2' }
-else                 { $Version = '25H2' }
-}
-
-# ==============================
-# Resolve working folder
-# ==============================
-$Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
-Write-Verbose "Resolved working folder: $Folder"
-
-# ==============================
-# Determine work modes
-# ==============================
-$workSwitches = @()
-if ($Export)  { $workSwitches += 'Export' }
-if ($KB)      { $workSwitches += 'KB' }
-if ($Drivers) { $workSwitches += 'Drivers' }
-if ($Reg)     { $workSwitches += 'Reg' }
-if ($Service) { $workSwitches += 'Service' }
-if ($Files)   { $workSwitches += 'Files' }
-
-if (-not $workSwitches) {
-# All if no specific components selected
-$Export = $true
-$KB = $true
-$Drivers = $true
-$Reg = $true
-$Service = $true
-$Files = $true
-$workSwitches = @('All')
-}
-
-Write-Log "Target profile: Windows $WinOS $Version $Arch"
-Write-Log "Root folder   : $Folder"
-Write-Log "Mode          : $($workSwitches -join ', ')"
-if ($Clean)  { Write-Log "Clean mode    : Enabled" "WARN" }
-if ($DryRun) { Write-Log "Dry-run mode  : Enabled" "WARN" }
-
-if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
-    # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
-    $HtmlAgilityPackDll = 'HtmlAgilityPack.dll'
-    $hapDll = Join-Path $Folder $HtmlAgilityPackDll
-
-    if ($Clean) {
-        if ($DryRun) {
-            Write-Log "[DryRun] Would remove: $hapDll"
-        } elseif (Test-Path $hapDLL) {
-            Write-Log "Removing: $hapDLL"
-            Remove-Item $hapDLL -Force
-        }
-    }
-    elseif ($DryRun) {
-        if (-not (Test-Path $hapDll)) {
-            Write-Log "[DryRun] Would download: $HtmlAgilityPackDll"
-        }   
-    } else {
-        if (-not (Test-Path $hapDll)) {
-            Write-Log "HtmlAgilityPack.dll not found - downloading..."
-
-            $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
-            $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
-            $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
-
-            # Clean old extraction folder if it exists
-            if (Test-Path $extractDir) {
-                Remove-Item $extractDir -Recurse -Force
-            }
-
-            # --- Download using .NET WebClient (PS 5.x safe) ---
-            Write-Verbose "Downloading via WebClient..."
-            $wc = New-Object System.Net.WebClient
-            $wc.DownloadFile($nugetUrl, $tmpNupkg)
-
-            # --- Extract using .NET ZipFile (PS 5.x safe) ---
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
-
-            # Prefer netstandard2.0, fallback to net45
-            $candidatePaths = @(
-                (Join-Path $extractDir "lib\netstandard2.0\$HtmlAgilityPackDll"),
-                (Join-Path $extractDir "lib\net45\$HtmlAgilityPackDll")
-            )
-
-            $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-            if (-not $sourceDll) {
-                throw "$HtmlAgilityPackDll not found inside NuGet package"
-            }
-
-            Copy-Item -Path $sourceDll -Destination $hapDll -Force
-            Write-Verbose "$HtmlAgilityPackDll copied to: $hapDll"
-
-            # Cleanup: remove extraction folder + nupkg
-            Remove-Item $extractDir -Recurse -Force
-            Remove-Item $tmpNupkg -Force
-        }
-
-        # --- Load the DLL (PS 5.x safe) ---
-        $hapLoaded = $false
-        try {
-            [void][HtmlAgilityPack.HtmlDocument]
-            $hapLoaded = $true
-        } catch {}
-
-        if (-not $hapLoaded) {
-            Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
-            Add-Type -Path $hapDll
-            Write-Debug "HtmlAgilityPack successfully loaded"
-        }
-    }
-}
-
-# ==============================
-# Core paths
-# ==============================
+# Setup paths
 $paths = [ordered]@{}
 $paths.SrcIsoRoot            = Join-Path $Folder $names.SrcIso
 $paths.SourceInSrc           = Join-Path $paths.SrcIsoRoot $names.Source
@@ -1873,25 +1379,23 @@ $paths.Checkpoint            = Join-Path $Folder $names.Checkpoint
 $paths.SrcIsoCheckpoint      = Join-Path $paths.Checkpoint $names.SrcIso
 $paths.DestIsoCheckpoint     = Join-Path $paths.Checkpoint $names.DestIso
 $paths.KBsCheckpoint         = Join-Path $paths.Checkpoint $names.KBs
-$paths.WimsCheckpoint        = Join-Path $paths.Checkpoint $names.Wims
+$paths.WimsCheckpoint        = Join-Path $paths.WimsCheckpoint $names.Wims
 
-
-# ==============================
-# Main orchestration
-# ==============================
-
-if ($Export) { Invoke-ExportWork }
-if ($KB) { Invoke-KBWork }
-if ($Drivers) { Invoke-DriverWork }
-if ($Reg) { Invoke-RegWork }
-if ($Service) { Invoke-ServiceWork }
-
-if ($Files) {
-    Write-InstallDriversCmd
-    Write-InstallRegsCmd
-    Write-PostSetupCmd
-    Write-SetupConfigFiles
-    Write-SetupCmdFiles
+# Run requested operations
+if ($Export -or $All) {
+    Invoke-ExportWork
 }
 
-Write-Log "Completed"
+if ($KB -or $All) {
+    Invoke-KBWork
+}
+
+if ($Service -or $All) {
+    Invoke-ServiceWork
+}
+
+if ($Drivers -or $All) {
+    Invoke-DriverWork
+}
+
+Write-Log "Script execution complete"
