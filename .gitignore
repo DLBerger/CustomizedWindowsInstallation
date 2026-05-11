@@ -1,5 +1,6 @@
 $WinpeDriver$
 KBs
+Registry
 CleanInstall.cmd
 InstallDrivers.cmd
 InstallRegs.cmd

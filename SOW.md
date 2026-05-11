@@ -143,6 +143,7 @@ Primary assumptions:
       Written under <Folder> and retained.
       Deleted during relevant cleaning operations.
   - Checkpointing and restartability:
+      Written under <Checkpoint> with work-specific folders and retained.
       Every major step writes a small .done file in the per-index work folder: export.done, boot.<index>.done, winre.<index>.done, <index>.done, kb.done, drivers.done, reg.done, files.done 
       On resume the script skips steps with checkpoints.
   - Logging and safety:
@@ -158,17 +159,22 @@ Primary assumptions:
   - Task context:
       PowerShell 5.x
       Lots of fast storage available.
-      User will supply a single driver root folder produced by dism /export-driver.
+      User will supply a single driver root folder produced by dism /export-driver defined in $names.WinpeDriver.
       The winre.wim to service is located at Windows\System32\Recovery\winre.wim inside each index's wim.
   - Naming conventions for files and paths we may want to change easily:
       $names = [ordered]@{
-          Iso                   = 'ISO'
+          Checkpoint            = 'Checkpoint'
+          SrcIso                = 'SrcISO'
+          DestIso               = 'DestISO'
           KBs                   = 'KBs'
           Wims                  = 'Wims'
           WinpeDriver           = '$WinpeDriver$'
           Registry              = 'Registry'
+          Source                = 'source'
+          BootWim               = 'boot.wim'
           InstallEsd            = 'install.esd'
           InstallWim            = 'install.wim'
+          WinreWim              = 'winre.wim'
           InstallDriversCmd     = 'InstallDrivers.cmd'
           InstallRegsCmd        = 'InstallRegs.cmd'
           PostSetupCmd          = 'PostSetup.cmd'
@@ -183,13 +189,18 @@ Primary assumptions:
           $names[$u] = $u
       }
 
-      $wimDirs = @('Temp', 'Mounts', 'Captures')
+      $wimDirs = @('Indices', 'Mounts', 'Serviced')
       foreach ($u in $wimDirs) {
           $names[$u] = $u
       }
 
       $paths = [ordered]@{}
-      $paths.IsoRoot               = Join-Path $Folder $names.Iso
+      $paths.SrcIsoRoot            = Join-Path $Folder $names.SrcIso
+      $paths.SourceInSrc           = Join-Path $paths.SrcIsoRoot $names.Source
+      $paths.DestIsoRoot           = Join-Path $Folder $names.DestIso
+      $paths.SourceInDest          = Join-Path $paths.DestIsoRoot $names.Source
+      $paths.BootWimInDest         = Join-Path $paths.SourceInDest $names.BootWim 
+      $paths.InstallWimInDest      = Join-Path $paths.SourceInDest $names.InstallWim 
       $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
       $paths.RegistryRoot          = Join-Path $Folder $names.Registry
       $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
@@ -199,6 +210,7 @@ Primary assumptions:
       $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
       $paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
       $paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
+      $paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
       $paths.KBsRoot               = Join-Path $Folder $names.KBs
       foreach ($u in $kbDirs) {
           $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
@@ -207,59 +219,62 @@ Primary assumptions:
       foreach ($u in $wimDirs) {
           $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
       }
+      $paths.Checkpoint            = Join-Path $Folder $names.Checkpoint
+      $paths.SrcIsoCheckpoint      = Join-Path $paths.Checkpoint $names.SrcIso
+      $paths.DestIsoCheckpoint     = Join-Path $paths.Checkpoint $names.DestIso
+      $paths.KBsCheckpoint         = Join-Path $paths.Checkpoint $names.KBs
+      $paths.WimsCheckpoint        = Join-Path $paths.Checkpoint $names.Wims
 
 Suggested Export processing:
-  - Ensure there is a folder under <Folder> to copy the .iso contents to.
-  - Mount and copy the contents of the source .iso under <Folder> and mark iso.copy.done.
-  - Verify boot.wim and (install.esd or install.wim) exits in the iso contents, if not fail.
-  - Ensure there is a folder under <Folder> to copy the original .wims to.
-  - Check if boot.wim.move.done, if not:
-      Move boot.wim for iso contents folder to original .wims folder and mark boot.wim.move.done.
-  - Check if install.esd.move.done, if not:
-      If install.esd exists in iso contents folder move to to original .wims folder.
-      Mark install.esd.move.done.
-  - Check if install.wim.move.done, if not:
-      If install.wim exists in iso contents folder then move to original .wims folder
-      else check if install.esd.move.done, if not fail with a consistency error
-        Convert install.esd to install.wim
-      Mark boot.wim.move.done.
-   Export the requested indices in parallel from boot.wim and install.wim into per-index uncompressed WIMs named <index>_boot.wim and <index>_install.wim into a wims folder.
-     Check each <index>_boot.wim.extracted and <index>_install.wim.extracted and only extract if they don't exist.
-     At the end of each wim extraction mark <index>_boot.wim.extracted or <index>_install.wim.extracted, respectively.
+  - Ensure there is a folder named $paths.SrcIsoRoot to copy the .iso contents to.
+  - Mount and copy the contents of the source .iso and mark srciso.copy.done.
+  - Verify $names.BootWim and ($names.InstallEsd or $names.InstallWim) exist in $paths.SourceInSrc, if not fail.
+  - Mark srciso.copy.done.
+  - Copy the contents of $paths.SrcIsoRoot to $paths.DestIsoRoot as links except for $names.BootWim, $names.InstallEsd, or $names.InstallWim.
+  - Mark destiso.copy.done.
+  - Ensure there is a folder named $paths.WimsRoot.
+  - Export the requested indices in parallel from $names.BootWim and $names.InstallWim/$names.InstallEsd into per-index uncompressed WIMs named
+     <index>_$names.BootWim and <index>_$names.InstallWim, respectively, into $paths.WimsIndices.
+      Check each <index>_$names.BootWim.extracted or <index>_$names.InstallWim.extracted and only extract if they don't exist.
+      At the end of each wim extraction mark <index>_BootWim.extracted or <index>_InstallWim.extracted, respectively.
 
 Suggested KB processing:
   - TBD - (Just accept what is already there in the existing script)
 
 Suggested Servive processing:
-  - For each index (parallel jobs):
-      Check for <index>_install.done, if not:
-        Mount <index>_install.wim to a per-index mount folder.
-        Check for <index>_winre.done, if not:
-          Locate Windows\System32\Recovery\winre.wim inside the mounted tree. If present, extract it to <index>_winre.wim and mark checkpoint <index>_winre.extracted.
-          Apply KB package file to the mounted install image with dism.
-          Unmount and commit the winre image.
-          Reinsert the serviced <index>_winre.wim back into the mounted install image at Windows\System32\Recovery\winre.wim and mark <index>_winre.done.
-        Apply KB package file to the mounted install image with dism.
-        Unmount and commit the install image and mark <index>_install.done.
-      Check for <index>_boot.done, if not:
-        Mount <index>_boot.wim to a per-index mount folder.
-        Apply KB package file to the mounted install image with dism.
-        Unmount and commit the install image and mark <index>_boot.done.
+  - For each index in $paths.WimsIndices (parallel jobs):
+      Report on which index and which OS it is
+      Check for <index>_$names.InstallWim.done, if not:
+        Check to see if any package files in $paths.KBsSSU or $paths.KBsLCU, if so, do the following:
+          Mount <index>_$names.InstallWim to a per-index mount folder.
+          Check to see if any package files in $paths.KBsSSU, if so, do the following:
+            Check for <index>_$names.WinreWim.done, if not:
+              Locate $paths.WinreWimInWim inside the mounted tree. If present, extract it to <index>_$names.WinreWim and mark <index>_$names.WinreWim.extracted.
+              Apply $paths.KBsSSU package files to the mounted install image with dism report each as you go.
+              Unmount and commit the winre image.
+              Reinsert the serviced <index>_$names.WinreWim back into the mounted install image at $paths.WinreWimInWim and mark <index>_$names.WinreWim.done.
+            Apply $paths.KBsSSU package files to the mounted install image with dism.
+          Check to see if any package files in $paths.KBsLCU, if so, do the following:
+            Apply $paths.KBsLCU package files to the mounted install image with dism report each as you go.
+          Unmount and commit the install image and mark <index>_$names.InstallWim.done.
+      Check to see if any package files in $paths.KBsSSU, if so, do the following:
+        Check for <index>_$names.BootWim.done, if not:
+          Mount <index>_$names.BootWim to a per-index mount folder.
+          Apply $paths.KBsSSU package files to the mounted install image with dism report each as you go.
+          Unmount and commit the install image and mark <index>_$names.BootWim.done.
   - Final assembly:
       Do the following steps serially as the final compression is going to be slow if Maximum is selected.
-      Check for install.wim.done, if not: 
-        Take the first <index>_install.wim and copy to the final compressed install.wim with configurable compression (None, Fast, Maximum).
-        Append all the remaining <index>_install.wim to the final install.wim
-        After the final install.wim is finished, mark install.wim.done
-      Check for boot.wim.done, if not: 
+      Check for $names.InstallWim.done, if not: 
+        Take the first <index>_$names.InstallWim (sorted in numeric order) and write to the final compressed $paths.InstallWimInDest with configurable compression (None, Fast, Maximum).
+        Append all the remaining <index>_$names.InstallWim into $paths.InstallWimInDest
+        After the final index is appended, mark $names.InstallWim.done
+      Check for $names.BootWim.done, if not: 
         Take the first <index>_boot.wim and copy to the final compressed boot.wim with configurable compression (None, Fast, Maximum).
         Append all the remaining <index>_boot.wim to the final boot.wim.
         After the final boot.wim is finished, mark boot.wim.done
-  - Final step:
-      Check for install.wim.servining.done, if not: 
-        Copy the final install.wim back into its iso contents place and mark install.wim.servicing.done
-      Check for boot.wim.servining.done, if not: 
-        Copy the final boot.wim back into its iso contents place and mark boot.wim.servicing.done
+        Take the first <index>_$names.BootWim (sorted in numeric order) and write to the final compressed $paths.BootWimInDest with configurable compression (None, Fast, Maximum).
+        Append all the remaining <index>_$names.BootWim into $paths.BootWimInDest
+        After the final index is appended, mark $names.BootWim.done
 
 Deliverable: a single PowerShell 5.x script file content and brief usage notes. Include examples of checkpoint files and resume commands.
 
