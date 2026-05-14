@@ -1,6 +1,10 @@
 $WinpeDriver$
+Checkpoint
+DestISO
 KBs
 Registry
+SrcISO
+Wims
 CleanInstall.cmd
 InstallDrivers.cmd
 InstallRegs.cmd
@@ -10,3 +14,4 @@ SetupConfig-Upgrade.ini
 Upgrade.cmd
 HtmlAgilityPack.dll
 CustomizedWindowsInstallation.ps1.old
+*.iso
