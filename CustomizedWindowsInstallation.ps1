@@ -1887,6 +1887,39 @@ function Invoke-ServiceWork {
     $finalMeta    = Read-JsonFile -Path $finalJson
     if (-not $finalMeta) { $finalMeta = @{} }
 
+    # Assemble one WIM (install or boot) by exporting all per-index source files
+    # into a single compressed destination.  DISM creates the file on the first
+    # call and appends on subsequent ones — the arguments are identical either
+    # way, so a single loop starting at 0 handles both cases.
+    function Invoke-AssembleWim {
+        param(
+            [string]   $WimLabel,    # display name for messages
+            [string]   $DestPath,    # final output file
+            [string[]] $Sources,     # per-index source WIM files (sorted)
+            [int[]]    $Indices,     # corresponding index numbers (for messages)
+            [string]   $Compression, # dism compress value (none/fast/maximum)
+            [string]   $DateKey      # key to stamp in $finalMeta on success
+        )
+
+        if ($Sources.Count -eq 0) { Write-Warning "No $WimLabel files found to assemble"; return }
+
+        $baseArgs = @('/Export-Image', "/DestinationImageFile:$DestPath", '/SourceIndex:1', "/Compress:$Compression")
+        try {
+            Write-Output "Assembling final $WimLabel ($($Sources.Count) index/indices)..."
+            for ($i = 0; $i -lt $Sources.Count; $i++) {
+                Write-Output "  Index $($Indices[$i])..."
+                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($Sources[$i])"))
+                if ($LASTEXITCODE -ne 0) { throw "DISM failed on $WimLabel index $($Indices[$i]) (exit $LASTEXITCODE)" }
+            }
+            $finalMeta[$DateKey] = (Get-Date -Format s)
+            Write-JsonFile -Path $finalJson -Data $finalMeta
+            Write-Output "Final $WimLabel assembled"
+        } catch {
+            Write-Output "ERROR assembling final $WimLabel`: $_"
+            if (Test-Path $DestPath) { Remove-Item $DestPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
     # -- Assemble final install.wim --
     $finalInstallPath = Join-Path $paths.WimsFinal $names.InstallWim
     if ($finalMeta.InstallWimDate) {
@@ -1895,27 +1928,9 @@ function Invoke-ServiceWork {
         $sortedInstallWims = @($extractedIndices |
             ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.InstallWim) } |
             Where-Object   { Test-Path $_ })
-        if ($sortedInstallWims.Count -eq 0) {
-            Write-Warning "No $($names.InstallWim) files found to assemble"
-        } else {
-            try {
-                Write-Output "Creating final $($names.InstallWim)..."
-                $baseArgs = @('/Export-Image', "/DestinationImageFile:$finalInstallPath", '/SourceIndex:1', "/Compress:$dismCompression")
-                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[0])"))
-                if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.InstallWim)) failed (exit $LASTEXITCODE)" }
-                for ($i = 1; $i -lt $sortedInstallWims.Count; $i++) {
-                    Write-Output "  Appending $($names.InstallWim) index $($extractedIndices[$i])..."
-                    Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[$i])"))
-                    if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.InstallWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
-                }
-                $finalMeta['InstallWimDate'] = (Get-Date -Format s)
-                Write-JsonFile -Path $finalJson -Data $finalMeta
-                Write-Output "Final $($names.InstallWim) assembled"
-            } catch {
-                Write-Output "ERROR assembling final $($names.InstallWim): $_"
-                if (Test-Path $finalInstallPath) { Remove-Item $finalInstallPath -Force -ErrorAction SilentlyContinue }
-            }
-        }
+        Invoke-AssembleWim -WimLabel $names.InstallWim -DestPath $finalInstallPath `
+                           -Sources $sortedInstallWims -Indices $extractedIndices `
+                           -Compression $dismCompression -DateKey 'InstallWimDate'
     }
 
     # -- Assemble final boot.wim --
@@ -1926,30 +1941,9 @@ function Invoke-ServiceWork {
         $sortedBootWims = @($extractedIndices |
             ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.BootWim) } |
             Where-Object   { Test-Path $_ })
-        if ($sortedBootWims.Count -eq 0) {
-            Write-Warning "No $($names.BootWim) files found to assemble"
-        } else {
-            try {
-                Write-Output "Creating final $($names.BootWim)..."
-                $baseArgs = @('/Export-Image',
-                              "/DestinationImageFile:$finalBootPath",
-                              '/SourceIndex:1',
-                              "/Compress:$dismCompression")
-                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[0])"))
-                if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.BootWim)) failed (exit $LASTEXITCODE)" }
-                for ($i = 1; $i -lt $sortedBootWims.Count; $i++) {
-                    Write-Output "  Appending $($names.BootWim) index $($extractedIndices[$i])..."
-                    Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[$i])"))
-                    if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.BootWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
-                }
-                $finalMeta['BootWimDate'] = (Get-Date -Format s)
-                Write-JsonFile -Path $finalJson -Data $finalMeta
-                Write-Output "Final $($names.BootWim) assembled"
-            } catch {
-                Write-Output "ERROR assembling final $($names.BootWim): $_"
-                if (Test-Path $finalBootPath) { Remove-Item $finalBootPath -Force -ErrorAction SilentlyContinue }
-            }
-        }
+        Invoke-AssembleWim -WimLabel $names.BootWim -DestPath $finalBootPath `
+                           -Sources $sortedBootWims -Indices $extractedIndices `
+                           -Compression $dismCompression -DateKey 'BootWimDate'
     }
 
     Write-Output "Service workflow complete"
