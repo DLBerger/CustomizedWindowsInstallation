@@ -679,64 +679,6 @@ function Resolve-IndexSelection {
 # Hardlink tree copy
 # ==============================
 
-function New-HardLinkTree {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Source,
-        [Parameter(Mandatory)]
-        [string]$Destination,
-        [string[]]$ExcludeFileNames = @()
-    )
-
-    Write-Verbose "New-HardLinkTree: '$Source' -> '$Destination'"
-    Write-Debug   "New-HardLinkTree: ExcludeFileNames=[$($ExcludeFileNames -join ', ')]"
-
-    Ensure-Folder -Path $Destination
-
-    $allFiles = @(Get-ChildItem -Path $Source -Recurse -File -ErrorAction SilentlyContinue)
-    $total    = $allFiles.Count
-    $done     = 0
-    $lastPct  = -1
-
-    Write-Output ("Hardlinking {0} files: '{1}' -> '{2}'" -f $total, $Source, $Destination)
-
-    foreach ($file in $allFiles) {
-        $done++
-        $pct = [math]::Floor(($done / [math]::Max($total, 1)) * 100)
-        if ($pct -ge ($lastPct + 10)) {
-            Write-Output ("  {0,3}%  {1}/{2} files" -f $pct, $done, $total)
-            $lastPct = $pct - ($pct % 10)
-        }
-
-        if ($file.Name -in $ExcludeFileNames) {
-            Write-Debug "  Skip (excluded): $($file.Name)"
-            continue
-        }
-
-        $relPath  = $file.FullName.Substring($Source.TrimEnd('\', '/').Length).TrimStart('\', '/')
-        $destPath = Join-Path $Destination $relPath
-        $destDir  = Split-Path $destPath -Parent
-
-        Ensure-Folder -Path $destDir
-
-        if (Test-Path $destPath) {
-            Write-Debug "  Already exists: $relPath"
-            continue
-        }
-
-        Write-Debug "  Hardlink: $relPath"
-        try {
-            New-Item -ItemType HardLink -Path $destPath -Value $file.FullName -Force -ErrorAction Stop | Out-Null
-        }
-        catch {
-            Write-Warning "Hardlink failed for '$relPath' - falling back to copy: $_"
-            Copy-Item -Path $file.FullName -Destination $destPath -Force
-        }
-    }
-
-    Write-Output ("  Hardlink tree complete: {0} files processed" -f $done)
-}
 
 # =========================
 # Extract section
