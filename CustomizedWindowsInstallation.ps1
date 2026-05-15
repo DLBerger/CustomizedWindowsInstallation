@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "ed9d9f9"
+$GitHash = "956c07d"
 
 # ==============================
 # Core names
@@ -276,6 +276,40 @@ function Ensure-Folder {
 
     if (-not (Test-Path $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Clean-File {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Output "[DryRun] Would remove file  : $Path"
+        } elseif (Test-Path $path) {
+            Write-Output "Removing file  : $($Path)"
+            Remove-Item $Path -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Clean-Folder {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if ($Clean) {
+        if ($DryRun) {
+            Write-Output "[DryRun] Would remove folder: $Path"
+        } elseif (Test-Path $Path) {
+            Write-Output "Removing folder: $($Path)"
+            Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -667,6 +701,11 @@ function Invoke-ExtractISO {
     [CmdletBinding()]
     param()
 
+    if ($Clean) {
+        Clean-Folder $paths.SrcIsoRoot
+        return
+    }
+
     if ($DryRun) {
         Write-Output "[DryRun] Would mount ISO: $ISO"
         Write-Output "[DryRun] Would validate $($names.BootFileBIOS) in $ISO"
@@ -676,14 +715,6 @@ function Invoke-ExtractISO {
         Write-Output "[DryRun] Would robocopy tree -> $($paths.SrcIsoRoot)"
         Write-Output "[DryRun] Would hardlink-copy $($paths.SrcIsoRoot) -> $($paths.DestIsoRoot) (excluding $($names.BootWim), $($names.InstallWim), $($names.InstallEsd))"
         Write-Output "[DryRun] Would export $($SelectedIndices.Count) indices to $($paths.WimsIndices)"
-        return
-    }
-
-    if ($Clean) {
-        if (Test-Path $paths.SrcIsoRoot) {
-            Write-Output "Removing: $($paths.SrcIsoRoot)"
-            Remove-Item $paths.SrcIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
         return
     }
 
@@ -781,17 +812,14 @@ function Invoke-Export {
     [CmdletBinding()]
     param()
 
-    if ($DryRun) {
-        Write-Output "[DryRun] Would collect WIM metadata from SrcIsoContent"
-        Write-Output "[DryRun] Would export $($SelectedIndices.Count) indices to $($paths.WimsIndices)"
+    if ($Clean) {
+        Clean-Folder $paths.WimsRoot
         return
     }
 
-    if ($Clean) {
-        if (Test-Path $paths.WimsRoot) {
-            Write-Output "Removing: $($paths.WimsRoot)"
-            Remove-Item $paths.WimsRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    if ($DryRun) {
+        Write-Output "[DryRun] Would collect WIM metadata from SrcIsoContent"
+        Write-Output "[DryRun] Would export $($SelectedIndices.Count) indices to $($paths.WimsIndices)"
         return
     }
 
@@ -801,6 +829,8 @@ function Invoke-Export {
     $extractJson  = Join-Path $paths.SrcIsoRoot "extract.json"
     $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
 
+    Ensure-Folder -Path $paths.WimsRoot
+    Ensure-Folder -Path $paths.WimsIndices
 
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
@@ -808,9 +838,6 @@ function Invoke-Export {
         return
     }
     $extractDate = [datetime]::Parse($extractMeta.Date)
-
-    Ensure-Folder -Path $paths.WimsRoot
-    Ensure-Folder -Path $paths.WimsIndices
 
     # Locate source WIMs
     $installSrc = if (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
@@ -1404,15 +1431,8 @@ function Build-ManifestEntry {
 
 function Invoke-KBWork {
 
-    # Clean mode
     if ($Clean) {
-        $path = $paths.KBsRoot
-        if ($DryRun) {
-            Write-Output "[DryRun] Would clean $path"
-        } elseif (Test-Path $path) {
-            Write-Output "Removing: $path"
-            Remove-Item $path -Recurse -Force
-        }
+        Clean-Folder $paths.KBsRoot
         return
     }
 
@@ -1561,6 +1581,12 @@ function Invoke-ServiceWork {
     [CmdletBinding()]
     param()
 
+    if ($Clean) {
+        Clean-Folder $paths.WimsMounts
+        Clean-Folder $paths.WimsServiced
+        return
+    }
+
     if ($DryRun) {
         Write-Output "[DryRun] Would service extracted indices in $($paths.WimsIndices)"
         Write-Output "[DryRun] Would apply SSU packages from : $($paths.KBsSSU)"
@@ -1568,14 +1594,6 @@ function Invoke-ServiceWork {
         Write-Output "[DryRun] Would service winre.wim inside each index's install.wim"
         Write-Output "[DryRun] Would assemble final install.wim -> $($paths.InstallWimInDest)"
         Write-Output "[DryRun] Would assemble final boot.wim   -> $($paths.BootWimInDest)"
-        return
-    }
-
-    if ($Clean) {
-        if (Test-Path $paths.WimsRoot) {
-            Write-Output "Removing: $($paths.WimsRoot)"
-            Remove-Item $paths.WimsRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
         return
     }
 
@@ -1877,12 +1895,7 @@ function Invoke-DriverWork {
     $WinpeDriverRoot = $paths.WinpeDriverRoot
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $WinpeDriverRoot"
-        } elseif (Test-Path $WinpeDriverRoot) {
-            Write-Output "Removing: $WinpeDriverRoot"
-            Remove-Item $WinpeDriverRoot -Recurse -Force
-        }
+        Clean-Folder $WinpeDriverRoot
         return
     }
 
@@ -1952,22 +1965,11 @@ function Invoke-RegWork {
 
     $RegistryRoot = $paths.RegistryRoot
 
-    #
-    # CLEAN MODE
-    #
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $RegistryRoot"
-        } elseif (Test-Path $RegistryRoot) {
-            Write-Output "Removing: $RegistryRoot"
-            Remove-Item $RegistryRoot -Recurse -Force
-        }
+        Clean-Folder $RegistryRoot
         return
     }
 
-    #
-    # PREP OUTPUT FOLDER
-    #
     if (-not $DryRun) {
         Ensure-Folder -Path $RegistryRoot
     }
@@ -2194,16 +2196,8 @@ endlocal
 '@
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $path"
-        } elseif (Test-Path $path) {
-            Write-Output "Removing: $path"
-            Remove-Item $path -Force
-        }
-        return
-    }
-
-    if ($DryRun) {
+        Clean-File $path
+    } elseif ($DryRun) {
         Write-Output "[DryRun] Would write: $path"
     } else {
         Write-Output "Writing: $path"
@@ -2234,16 +2228,8 @@ endlocal
 '@
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $path"
-        } elseif (Test-Path $path) {
-            Write-Output "Removing: $path"
-            Remove-Item $path -Force
-        }
-        return
-    }
-
-    if ($DryRun) {
+        Clean-File $path
+    } elseif ($DryRun) {
         Write-Output "[DryRun] Would write: $path"
     } else {
         Write-Output "Writing: $path"
@@ -2304,16 +2290,8 @@ for %%F in ("%SRC%\{0}\{1}\*.bat") do (
 '@
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $path"
-        } elseif (Test-Path $path) {
-            Write-Output "Removing: $path"
-            Remove-Item $path -Force
-        }
-        return
-    }
-
-    if ($DryRun) {
+        Clean-File $path
+    } elseif ($DryRun) {
         Write-Output "[DryRun] Would write: $path"
     } else {
         Write-Output "Writing: $path"
@@ -2394,23 +2372,9 @@ Telemetry=Disable
 
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $cleanPath"
-            Write-Output "[DryRun] Would remove: $upgradePath"
-        } else {
-            if (Test-Path $cleanPath) {
-                Write-Output "Removing: $cleanPath"
-                Remove-Item $cleanPath -Force
-            }
-            if (Test-Path $upgradePath) {
-                Write-Output "Removing: $upgradePath"
-                Remove-Item $upgradePath -Force
-            }
-        }
-        return
-    }
-
-    if ($DryRun) {
+        Clean-File $cleanPath
+        Clean-File $upgradePath
+    } elseif ($DryRun) {
         Write-Output "[DryRun] Would write: $cleanPath"
         Write-Output "[DryRun] Would write: $upgradePath"
     } else {
@@ -2449,23 +2413,9 @@ endlocal
 '@
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $cleanPath"
-            Write-Output "[DryRun] Would remove: $upgradePath"
-        } else {
-            if (Test-Path $cleanPath) {
-                Write-Output "Removing: $cleanPath"
-                Remove-Item $cleanPath -Force
-            }
-            if (Test-Path $upgradePath) {
-                Write-Output "Removing: $upgradePath"
-                Remove-Item $upgradePath -Force
-            }
-        }
-        return
-    }
-
-    if ($DryRun) {
+        Clean-File $cleanPath
+        Clean-File $upgradePath
+    } elseif ($DryRun) {
         Write-Output "[DryRun] Would write: $cleanPath"
         Write-Output "[DryRun] Would write: $upgradePath"
     } else {
@@ -2488,18 +2438,15 @@ function Invoke-PrepDestISO {
     [CmdletBinding()]
     param()
 
+    if ($Clean) {
+        Clean-Folder $paths.DestIsoRoot
+        return
+    }
+
     if ($DryRun) {
         Write-Output "[DryRun] Would hardlink-copy $($paths.SrcIsoContent) -> $($paths.DestIsoContent)"
         Write-Output "[DryRun] Would copy $finalInstall -> $($paths.InstallWimInDest)"
         Write-Output "[DryRun] Would copy $finalBoot    -> $($paths.BootWimInDest)"
-        return
-    }
-
-    if ($Clean) {
-        if (Test-Path $paths.DestIsoRoot) {
-            Write-Output "Removing: $($paths.DestIsoRoot)"
-            Remove-Item $paths.DestIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
         return
     }
 
@@ -2611,12 +2558,7 @@ function Invoke-PrepDestISO {
 # ==============================
 function Invoke-CreateISOWork {
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $DestISO"
-        } elseif ($DestISO -and (Test-Path $DestISO)) {
-            Write-Output "Removing: $DestISO"
-            Remove-Item $DestISO -Force
-        }
+        Clean-File $DestISO
         return
     }
 
@@ -2625,6 +2567,7 @@ function Invoke-CreateISOWork {
         Write-Output "[DryRun]   from: $($paths.DestIsoContent)"
         return
     }
+
     Write-Output "Starting CreateISO workflow..."
     Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
     $prepJson = Join-Path $paths.DestIsoRoot "prep.json"
@@ -2917,14 +2860,14 @@ if ($All -or $Most -or (-not $workSwitches)) {
     }
 }
 
-Write-Output "Target profile: Windows $WinOS $Version $Arch"
-Write-Output "Root folder   : $Folder"
-Write-Output "ISO           : $(if ($ISO) { $ISO } else { '(none)' })"
-Write-Output "DestISO       : $(if ($DestISO) { $DestISO } else { '(none)' })"
-Write-Output "Selected idx  : $(if ($SelectedIndices.Count -gt 0) { $SelectedIndices.Index -join ', ' } else { 'all (determined at export time)' })"
-Write-Output "Mode          : $($workSwitches -join ', ')"
-if ($Clean)  { Write-Output "Clean mode    : Enabled" }
-if ($DryRun) { Write-Output "Dry-run mode  : Enabled" }
+Write-Output "Target profile : Windows $WinOS $Version $Arch"
+Write-Output "Root folder    : $Folder"
+Write-Output "ISO            : $(if ($ISO) { $ISO } else { '(none)' })"
+Write-Output "DestISO        : $(if ($DestISO) { $DestISO } else { '(none)' })"
+Write-Output "Selected idx   : $(if ($SelectedIndices.Count -gt 0) { $SelectedIndices.Index -join ', ' } else { 'all (determined at export time)' })"
+Write-Output "Mode           : $($workSwitches -join ', ')"
+if ($Clean)  { Write-Output "Clean mode     : Enabled" }
+if ($DryRun) { Write-Output "Dry-run mode   : Enabled" }
 
 if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
     # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
@@ -2932,12 +2875,7 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
     $hapDll = Join-Path $Folder $HtmlAgilityPackDll
 
     if ($Clean) {
-        if ($DryRun) {
-            Write-Output "[DryRun] Would remove: $hapDll"
-        } elseif (Test-Path $hapDLL) {
-            Write-Output "Removing: $hapDLL"
-            Remove-Item $hapDLL -Force
-        }
+        Clean-File $hapDll
     }
     elseif ($DryRun) {
         if (-not (Test-Path $hapDll)) {
