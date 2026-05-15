@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "956c07d"
+$GitHash = "3b38bac"
 
 # ==============================
 # Core names
@@ -450,6 +450,7 @@ function Run-App {
     }
     $proc.WaitForExit()
     $rc = $proc.ExitCode
+    Write-Debug "$($psi.FileName) $($psi.Arguments) exited with code $rc"
     $global:LASTEXITCODE = $rc
     return ,$allOutput
 }
@@ -841,11 +842,11 @@ function Invoke-Export {
     Write-Output "Starting Export workflow..."
     Write-Verbose "Invoke-Export: SourcesInSrc='$($paths.SourcesInSrc)' WimsIndices='$($paths.WimsIndices)'"
 
-    $extractJson  = Join-Path $paths.SrcIsoRoot "extract.json"
-    $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
-
     Ensure-Folder -Path $paths.WimsRoot
     Ensure-Folder -Path $paths.WimsIndices
+
+    $extractJson  = Join-Path $paths.SrcIsoRoot "extract.json"
+    $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
 
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
@@ -911,6 +912,7 @@ function Invoke-Export {
         $installJson = $installDest + ".json"
         $existInstall = Read-JsonFile -Path $installJson
         $needInstall  = (-not $existInstall) -or ([datetime]::Parse($existInstall.ExportDate) -le $extractDate)
+Write-Debug "    installDest='$installDest' installJson='$installJson' existInstall='$existInstall' needInstall=$needInstall"
 
         if (-not $needInstall) {
             Write-Output "    $($names.InstallWim) index $idx already exported ($($existInstall.ExportDate))"
@@ -922,6 +924,7 @@ function Invoke-Export {
                 Write-Warning "    DISM export failed for $($names.InstallWim) index $idx (exit $LASTEXITCODE) — skipping this index"
                 continue
             }
+Write-Debug "    DISM export completed for index $idx, writing metadata JSON..."
             Write-JsonFile -Path $installJson -Data @{ Index = $idx; Name = $imgName; ExportDate = (Get-Date -Format s) }
             Write-Output "    $($names.InstallWim) index $idx exported"
         }
@@ -931,6 +934,7 @@ function Invoke-Export {
         $bootJson = $bootDest + ".json"
         $existBoot = Read-JsonFile -Path $bootJson
         $needBoot  = (-not $existBoot) -or ([datetime]::Parse($existBoot.ExportDate) -le $extractDate)
+Write-Debug "    bootDest='$bootDest' bootJson='$bootJson' existBoot='$existBoot' needBoot=$needBoot"
 
         if (-not $needBoot) {
             Write-Output "    $($names.BootWim) index $idx already exported ($($existBoot.ExportDate))"
@@ -941,6 +945,7 @@ function Invoke-Export {
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.BootWim) index $idx (exit $LASTEXITCODE) — skipping boot image for this index"
             } else {
+Write-Debug "    DISM export completed for index $idx, writing metadata JSON..."
                 Write-JsonFile -Path $bootJson -Data @{ Index = $idx; SourceBootIndex = $bootSrcIdx; ExportDate = (Get-Date -Format s) }
                 Write-Output "    $($names.BootWim) index $idx exported"
             }
