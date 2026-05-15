@@ -1903,10 +1903,8 @@ function Invoke-ServiceWork {
 
         if ($Sources.Count -eq 0) { Write-Warning "No $WimLabel files found to assemble"; return }
 
-        # Individual per-index WIMs always contain exactly one image at index 1
-        # regardless of the original index number in the source install.wim.
-        # /Compress must always be supplied — omitting it causes DISM to corrupt
-        # the destination file when appending to an existing WIM.
+        # Individual WIMs always have a SourceIndex of 1 regardless of their original index
+        # You must have the compression or dism will corrupt the file
         $baseArgs = @('/Export-Image', "/DestinationImageFile:$DestPath", '/SourceIndex:1', "/Compress:$Compression")
         try {
             Write-Output "Assembling final $WimLabel ($($Sources.Count) index/indices)..."
