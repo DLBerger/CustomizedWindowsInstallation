@@ -321,14 +321,17 @@ function Run-App {
     $stderr = $proc.StandardError
 
     # Track which lines have already been emitted to prevent stdout/stderr duplicates
-    $seenLines      = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $seenLines       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    # Track progress intervals to keep logs clean
     $lastLoggedValue = -1
 
     while (-not $proc.HasExited -or -not $stdout.EndOfStream -or -not $stderr.EndOfStream) {
         while (-not $stdout.EndOfStream) {
             $line = $stdout.ReadLine()
+            # ONLY skip if the stream is literally sending nothing because it's idling
             if ($null -eq $line) { continue }
 
+            # If it's a valid, intentional blank line printed by the app, let it pass through safely
             if ([string]::IsNullOrWhiteSpace($line)) {
                 Write-Output ""
                 $allOutput += ""
@@ -338,6 +341,9 @@ function Run-App {
             $isProgressLine = $false
             $logLine = $line
 
+            # ----------------------------------------------------
+            # DISM Engine
+            # ----------------------------------------------------
             if ($Exe -match 'dism\.exe$') {
                 if ($line -match '\[=+?\s+(\d+(?:\.\d+)?)%\s+=+?\]') {
                     $isProgressLine = $true
@@ -345,10 +351,14 @@ function Run-App {
                     if ($percent % 10 -eq 0 -and $percent -ne $lastLoggedValue) {
                         $logLine = "   Progress: $percent%"
                         $lastLoggedValue = $percent
-                        $isProgressLine = $false
+                        $isProgressLine = $false # Allow this specific milestone line to be output
                     }
                 }
-            } elseif ($Exe -match 'robocopy\.exe$') {
+            }
+            # ----------------------------------------------------
+            # Robocopy Engine
+            # ----------------------------------------------------
+            elseif ($Exe -match 'robocopy\.exe$') {
                 if ($line -match '(\d+(?:\.\d+)?)%') {
                     $isProgressLine = $true
                     $percent = [math]::Round([double]$Matches[1])
@@ -358,7 +368,11 @@ function Run-App {
                         $isProgressLine = $false
                     }
                 }
-            } elseif ($Exe -match 'oscdimg\.exe$') {
+            }
+            # ----------------------------------------------------
+            # Oscdimg Engine
+            # ----------------------------------------------------
+            elseif ($Exe -match 'oscdimg\.exe$') {
                 if ($line -match '(\d+)%\s+complete') {
                     $isProgressLine = $true
                     $percent = [int]$Matches[1]
@@ -370,6 +384,7 @@ function Run-App {
                 }
             }
 
+            # Output and store the line if it isn't intermediate progress spam
             if (-not $isProgressLine) {
                 $seenLines.Add($logLine) | Out-Null
                 Write-Output $logLine
@@ -815,7 +830,7 @@ function Invoke-ExtractISO {
     $diskImage = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction Stop
 
     try {
-        # Wait for the volume to appear (up to 5 retries)
+        # Wait for the volume to actually appear
         $vol = $null
         for ($r = 0; $r -lt 5 -and $null -eq $vol; $r++) {
             $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
@@ -823,11 +838,12 @@ function Invoke-ExtractISO {
         }
         if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize." }
 
-        $driveLetterRaw = $vol.DriveLetter + ":"
-        $driveLetter    = $driveLetterRaw + "\"
+        # Create a 'safe' path for Test-Path
+        $driveLetterRaw = $vol.DriveLetter + ":"      # e.g., "D:"
+        $driveLetter    = $driveLetterRaw + "\"        # e.g., "D:\" (for Test-Path)
         Write-Output "ISO mounted at: $driveLetter"
 
-        # Validate required files before copying
+        # ---- Validate required files in ISO ----
         $missing = @()
         if (-not (Test-Path (Join-Path $driveLetter $names.BootFileBIOS))) { $missing += $names.BootFileBIOS }
         if (-not (Test-Path (Join-Path $driveLetter $names.BootFileUEFI))) { $missing += $names.BootFileUEFI }
@@ -841,8 +857,19 @@ function Invoke-ExtractISO {
         }
         Write-Output "Source ISO validation passed"
 
+        # Copy the ISO tree to SrcIsoContent
         Write-Output "Copying ISO tree -> $($paths.SrcIsoContent)..."
-        Run-App 'robocopy.exe' @($driveLetterRaw, $paths.SrcIsoContent, '/E', '/R:2', '/W:1', '/NC', '/TEE')
+        $roboArgs = @(
+            $driveLetterRaw,
+            $paths.SrcIsoContent,
+            '/E',    # copy subdirectories, including Empty ones
+            '/R:2',  # retry twice
+            '/W:1',  # wait 1 second between retries
+            '/NC',   # No Class - don't show file classes (e.g., "New File", "Same File"), just show the file names
+            '/TEE'   # output to console and log file
+        )
+        Run-App 'robocopy.exe' $roboArgs
+        # Robocopy exit codes 0-7 are all 'Success' variants
         if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
 
     } finally {
@@ -2734,11 +2761,11 @@ function Invoke-CreateISOWork {
 
     $oscdimgArgs = @(
         "-m",                    # Ignore size limits
-        "-o",                    # Optimize storage (single-instance files)
-        "-u2",                   # UDF file system
-        "-udfver102",            # UDF 1.02 compatibility
-        "-l$IsoVolumeLabel",     # Volume label
-        "-bootdata:$bootdata",   # Dual-boot BIOS + UEFI
+        "-o",                    # Optimize storage by encoding duplicate files only once
+        "-u2",                   # Use UTF-8 encoding for file names (allows for long file names and Unicode characters)
+        "-udfver102",            # Use UDF 1.02 filesystem version (max compatibility, required for some boot scenarios)
+        "-l$IsoVolumeLabel",     # Set volume label
+        "-bootdata:$bootdata",   # Define multi-boot configuration for BIOS and UEFI
         $paths.DestIsoContent,
         $DestISO
     )
