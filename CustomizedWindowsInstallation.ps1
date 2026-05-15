@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "089b410"
+$GitHash = "3ad0c56"
 
 # ==============================
 # Core names
@@ -515,7 +515,7 @@ function Get-WimMetadata {
     Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
 
     # --- Call 1: enumerate all images ---
-    $listOutput = Run-App $dismExe $('/Get-WimInfo, "/WimFile:$WimPath")
+    $listOutput = Run-App $dismExe $('/Get-WimInfo', "/WimFile:$WimPath")
     $images     = [System.Collections.Generic.List[object]]::new()
 
     if ($LASTEXITCODE -eq 0) {
