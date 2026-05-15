@@ -40,15 +40,19 @@ If omitted:
 CPU architecture: 'x64' or 'arm64'.
 If omitted, defaults to 'x64'.
 
+.PARAMETER Extract
+Mount the source ISO and extract its full content tree to <Folder>\SrcISO\Content\.
+Alias: -ExtractISO
+
 .PARAMETER ExportWims
-Mount and copy the contents of <ISO> to <Folder> and then export the requested indices (see below).
+Export selected indices from SrcISO\Content\ into per-index uncompressed WIMs under Wims\Indices\.
 Alias: -Export
 
 .PARAMETER KB
 Download OS and .NET updates.
 
 .PARAMETER Service
-  Apply the download KBs to the exported indices and create the final install.wim and boot.wim.
+Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim in Wims\Final\.
 
 .PARAMETER Drivers
 Export drivers into $WinpeDriver$.
@@ -59,11 +63,22 @@ Export registry keys.
 .PARAMETER Files
 Generate PostSetup.cmd, SetupConfig-*.ini, and additional .cmd files.
 
+.PARAMETER Prep
+Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
+Alias: -PrepDestISO
+
+.PARAMETER CreateISO
+Create the final .iso from DestISO\Content\ using oscdimg.
+
 .PARAMETER All
-Shorthand for -Export -KB -Service -Drivers -Reg -Files and the default if no specific switch is provided.
+Shorthand for -Extract -Export -KB -Service -Drivers -Reg -Files -Prep -CreateISO.
+Default when no specific switch is provided.
+
+.PARAMETER Most
+Same as -All without -CreateISO.
 
 .PARAMETER ShowIndices
-Shows available image indices (index and name) and exits.
+Print available image indices from the source ISO (or cached metadata) and exit.
 
 .PARAMETER Home
 Select editions whose normalized label matches "Home" exactly.
@@ -87,13 +102,6 @@ If more than one .iso is present an error is raised; use this parameter to disam
 .PARAMETER DestISO
 Explicit path to destination ISO.
 If omitted, the source ISO path is reused with the extension changed to _KBs.iso.
-
-.PARAMETER ShowIndices
-Print the available image indices (index number and name) from the source ISO and exit.
-
-.PARAMETER CreateISO
-Reuse an existing work folder from a prior run.
-Without explicit index selection (-Home/-Pro/-Indices) no rebuild/service/DU actions are performed.
 
 .PARAMETER UseADK
 Prefer ADK dism.exe and oscdimg.exe when available.
@@ -149,6 +157,9 @@ param(
     [ValidateSet('x64','arm64')]
     [string]$Arch,
 
+    [Alias('ExtractISO')]
+    [switch]$Extract,
+
     [Alias('ExportWims')]
     [switch]$Export,
 
@@ -157,7 +168,15 @@ param(
     [switch]$Drivers,
     [switch]$Reg,
     [switch]$Files,
+
+    [Alias('PrepDestISO')]
+    [switch]$Prep,
+
+    [switch]$CreateISO,
+
     [switch]$All,
+
+    [switch]$Most,
 
     [switch]$ShowIndices,
 
@@ -168,8 +187,6 @@ param(
     [switch]$SelectPro,
 
     [string]$Indices,
-
-    [switch]$CreateISO,
 
     [switch]$UseADK,
 
@@ -193,13 +210,13 @@ $GitHash = "da4c872"
 # Core names
 # ==============================
 $names = [ordered]@{
-    Checkpoint            = 'Checkpoint'
     SrcIso                = 'SrcISO'
     DestIso               = 'DestISO'
     KBs                   = 'KBs'
     Wims                  = 'Wims'
     WinpeDriver           = '$WinpeDriver$'
     Registry              = 'Registry'
+    Content               = 'Content'
     Sources               = 'sources'
     BootWim               = 'boot.wim'
     InstallEsd            = 'install.esd'
@@ -221,7 +238,7 @@ foreach ($u in $kbDirs) {
     $names[$u] = $u
 }
 
-$wimDirs = @('Indices', 'Mounts', 'Serviced')
+$wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final')
 foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
@@ -262,6 +279,22 @@ function Ensure-Folder {
     }
 }
 
+function Read-JsonFile {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path -PathType Leaf)) { return $null }
+    try   { Get-Content $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+    catch { Write-Warning "Failed to read JSON '$Path': $_"; $null }
+}
+
+function Write-JsonFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Data
+    )
+    Ensure-Folder -Path (Split-Path $Path -Parent)
+    $Data | ConvertTo-Json -Depth 6 | Set-Content -Path $Path -Encoding UTF8
+}
+
 function Run-App {
     param(
         [Parameter(Mandatory)]
@@ -287,16 +320,15 @@ function Run-App {
     $stdout = $proc.StandardOutput
     $stderr = $proc.StandardError
 
-    # Track progress intervals to keep logs clean
+    # Track which lines have already been emitted to prevent stdout/stderr duplicates
+    $seenLines      = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $lastLoggedValue = -1
 
     while (-not $proc.HasExited -or -not $stdout.EndOfStream -or -not $stderr.EndOfStream) {
         while (-not $stdout.EndOfStream) {
             $line = $stdout.ReadLine()
-            # ONLY skip if the stream is literally sending nothing because it's idling
-            if ($line -eq $null) { continue } 
+            if ($null -eq $line) { continue }
 
-            # If it's a valid, intentional blank line printed by the app, let it pass through safely
             if ([string]::IsNullOrWhiteSpace($line)) {
                 Write-Output ""
                 $allOutput += ""
@@ -306,9 +338,6 @@ function Run-App {
             $isProgressLine = $false
             $logLine = $line
 
-            # ----------------------------------------------------
-            # DISM Engine
-            # ----------------------------------------------------
             if ($Exe -match 'dism\.exe$') {
                 if ($line -match '\[=+?\s+(\d+(?:\.\d+)?)%\s+=+?\]') {
                     $isProgressLine = $true
@@ -316,14 +345,10 @@ function Run-App {
                     if ($percent % 10 -eq 0 -and $percent -ne $lastLoggedValue) {
                         $logLine = "   Progress: $percent%"
                         $lastLoggedValue = $percent
-                        $isProgressLine = $false # Allow this specific milestone line to be output
+                        $isProgressLine = $false
                     }
                 }
-            }
-            # ----------------------------------------------------
-            # Robocopy Engine
-            # ----------------------------------------------------
-            elseif ($Exe -match 'robocopy\.exe$') {
+            } elseif ($Exe -match 'robocopy\.exe$') {
                 if ($line -match '(\d+(?:\.\d+)?)%') {
                     $isProgressLine = $true
                     $percent = [math]::Round([double]$Matches[1])
@@ -333,11 +358,7 @@ function Run-App {
                         $isProgressLine = $false
                     }
                 }
-            }
-            # ----------------------------------------------------
-            # Oscdimg Engine
-            # ----------------------------------------------------
-            elseif ($Exe -match 'oscdimg\.exe$') {
+            } elseif ($Exe -match 'oscdimg\.exe$') {
                 if ($line -match '(\d+)%\s+complete') {
                     $isProgressLine = $true
                     $percent = [int]$Matches[1]
@@ -349,18 +370,21 @@ function Run-App {
                 }
             }
 
-            # Output and store the line if it isn't intermediate progress spam
             if (-not $isProgressLine) {
+                $seenLines.Add($logLine) | Out-Null
                 Write-Output $logLine
                 $allOutput += $logLine
             }
         }
-        
+
         while (-not $stderr.EndOfStream) {
             $line = $stderr.ReadLine()
-            if ($line -ne $null) { 
-                Write-Output $line
-                $allOutput += $line 
+            if ($null -ne $line -and -not [string]::IsNullOrWhiteSpace($line)) {
+                # Only output stderr lines that were NOT already written from stdout
+                if ($seenLines.Add($line)) {
+                    Write-Output $line
+                    $allOutput += $line
+                }
             }
         }
         Start-Sleep -Milliseconds 50
@@ -744,245 +768,331 @@ function New-HardLinkTree {
 # Extract/Export section
 # =========================
 
-function Invoke-ExportWork {
+function Invoke-ExtractISO {
     [CmdletBinding()]
     param()
 
+    Write-Verbose "Invoke-ExtractISO: ISO='$ISO' SrcIsoContent='$($paths.SrcIsoContent)'"
+    $extractJson = Join-Path $paths.SrcIsoRoot "extract.json"
+
     if ($DryRun) {
         Write-Output "[DryRun] Would mount ISO: $ISO"
-        Write-Output "[DryRun] Would validate $($names.BootFileBIOS) in $ISO"
-        Write-Output "[DryRun] Would validate $($names.BootFileUEFI) in $ISO"
-        Write-Output "[DryRun] Would validate $($paths.BootWimInIso) in $ISO"
-        Write-Output "[DryRun] Would validate $($paths.InstallWimInIso) or $($paths.InstallEsdInIso) in $ISO"
-        Write-Output "[DryRun] Would robocopy tree -> $($paths.SrcIsoRoot)"
-        Write-Output "[DryRun] Would hardlink-copy $($paths.SrcIsoRoot) -> $($paths.DestIsoRoot) (excluding $($names.BootWim), $($names.InstallWim), $($names.InstallEsd))"
+        Write-Output "[DryRun] Would validate boot/install files in ISO"
+        Write-Output "[DryRun] Would robocopy entire ISO tree -> $($paths.SrcIsoContent)"
+        Write-Output "[DryRun] Would write extract.json to $extractJson"
+        return
+    }
+
+    if ($Clean) {
+        if (Test-Path $paths.SrcIsoRoot) {
+            Write-Output "Removing: $($paths.SrcIsoRoot)"
+            Remove-Item $paths.SrcIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
+
+    Write-Output "Starting ExtractISO workflow..."
+
+    if (-not $ISO -or -not (Test-Path $ISO)) {
+        throw "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
+    }
+
+    # Checkpoint: skip if same ISO was already extracted; clean and re-extract if ISO changed
+    $existingJson = Read-JsonFile -Path $extractJson
+    if ($existingJson) {
+        if ($existingJson.ISOPath -eq $ISO) {
+            Write-Output "ExtractISO already done for this ISO (extract.json matches)"
+            Write-Debug  "extract.json: ISOPath='$($existingJson.ISOPath)' Date='$($existingJson.Date)'"
+            return
+        }
+        Write-Output "ISO path changed (was '$($existingJson.ISOPath)'); cleaning SrcIsoRoot and re-extracting..."
+        Remove-Item $paths.SrcIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Ensure-Folder -Path $paths.SrcIsoContent
+
+    Write-Output "Mounting ISO: $ISO"
+    $diskImage = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction Stop
+
+    try {
+        # Wait for the volume to appear (up to 5 retries)
+        $vol = $null
+        for ($r = 0; $r -lt 5 -and $null -eq $vol; $r++) {
+            $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
+            if ($null -eq $vol) { Start-Sleep -Seconds 1 }
+        }
+        if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize." }
+
+        $driveLetterRaw = $vol.DriveLetter + ":"
+        $driveLetter    = $driveLetterRaw + "\"
+        Write-Output "ISO mounted at: $driveLetter"
+
+        # Validate required files before copying
+        $missing = @()
+        if (-not (Test-Path (Join-Path $driveLetter $names.BootFileBIOS))) { $missing += $names.BootFileBIOS }
+        if (-not (Test-Path (Join-Path $driveLetter $names.BootFileUEFI))) { $missing += $names.BootFileUEFI }
+        if (-not (Test-Path (Join-Path $driveLetter $paths.BootWimInIso)))  { $missing += $paths.BootWimInIso }
+        if (-not ((Test-Path (Join-Path $driveLetter $paths.InstallWimInIso)) -or
+                  (Test-Path (Join-Path $driveLetter $paths.InstallEsdInIso)))) {
+            $missing += "$($paths.InstallWimInIso) or $($paths.InstallEsdInIso)"
+        }
+        if ($missing.Count -gt 0) {
+            throw "Source ISO validation failed. Missing: $($missing -join ', ')"
+        }
+        Write-Output "Source ISO validation passed"
+
+        Write-Output "Copying ISO tree -> $($paths.SrcIsoContent)..."
+        Run-App 'robocopy.exe' @($driveLetterRaw, $paths.SrcIsoContent, '/E', '/R:2', '/W:1', '/NC', '/TEE')
+        if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
+
+    } finally {
+        if (Get-DiskImage -ImagePath $ISO | Where-Object { $_.Attached }) {
+            Write-Output "Unmounting ISO..."
+            Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
+
+    Write-JsonFile -Path $extractJson -Data @{ ISOPath = $ISO; Date = (Get-Date -Format s) }
+    Write-Output "ExtractISO complete (extract.json written)"
+}
+
+function Invoke-Export {
+    [CmdletBinding()]
+    param()
+
+    Write-Verbose "Invoke-Export: SourcesInSrc='$($paths.SourcesInSrc)' WimsIndices='$($paths.WimsIndices)'"
+    $extractJson  = Join-Path $paths.SrcIsoRoot "extract.json"
+    $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
+
+    if ($DryRun) {
+        Write-Output "[DryRun] Would collect WIM metadata from SrcIsoContent"
         Write-Output "[DryRun] Would export $($SelectedIndices.Count) indices to $($paths.WimsIndices)"
         return
     }
 
     if ($Clean) {
-        foreach ($cleanPath in @($paths.SrcIsoRoot, $paths.DestIsoRoot, $paths.WimsRoot)) {
-            if (Test-Path $cleanPath) {
-                Write-Output "Removing: $cleanPath"
-                Remove-Item $cleanPath -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
-        foreach ($ckptName in @('srciso.copy.done', 'destiso.copy.done', 'export.done')) {
-            $ckpt = Join-Path $paths.Checkpoint $ckptName
-            if (Test-Path $ckpt) { Remove-Item $ckpt -Force }
+        if (Test-Path $paths.WimsRoot) {
+            Write-Output "Removing: $($paths.WimsRoot)"
+            Remove-Item $paths.WimsRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
         return
     }
 
-    Write-Output  "Starting Export workflow..."
-    Write-Verbose "Invoke-ExportWork: ISO='$ISO' SrcIsoRoot='$($paths.SrcIsoRoot)'"
-    Write-Debug   "Invoke-ExportWork: SourcesInSrc='$($paths.SourcesInSrc)' DestIsoRoot='$($paths.DestIsoRoot)' WimsIndices='$($paths.WimsIndices)'"
+    Write-Output "Starting Export workflow..."
 
-    Ensure-Folder -Path $paths.Checkpoint
-    Ensure-Folder -Path $paths.SrcIsoRoot
-
-    # -----------------------------------------------------------------------
-    # Step 1: Mount the source ISO and robocopy its contents to SrcIsoRoot
-    # -----------------------------------------------------------------------
-    $srcIsoCopyCheckpoint = Join-Path $paths.Checkpoint "srciso.copy.done"
-
-    if (Test-Path $srcIsoCopyCheckpoint) {
-        Write-Output "Source ISO copy already completed (checkpoint: srciso.copy.done)"
-        Write-Debug  "srciso.copy.done timestamp: $(Get-Content $srcIsoCopyCheckpoint -Raw -ErrorAction SilentlyContinue)"
-    } else {
-        if (-not $ISO -or -not (Test-Path $ISO)) {
-            throw "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
-        }
-
-        Write-Output  "Mounting ISO: $ISO"
-        $diskImage = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction Stop
-
-        try {
-            # Wait for the volume to actually appear
-            $vol = $null
-            $retryCount = 0
-            while ($null -eq $vol -and $retryCount -lt 5) {
-                $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
-                if ($null -eq $vol) { 
-                    Start-Sleep -Seconds 1 
-                    $retryCount++
-                }
-            }
-
-            if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize." }
-
-            # Create a 'safe' path for Test-Path
-            $driveLetterRaw = $vol.DriveLetter + ":"      # e.g., "D:"
-            $driveLetter    = $driveLetterRaw + "\"       # e.g., "D:\" (for Test-Path)
-
-            Write-Output "ISO mounted at: $driveLetter"
-
-            # ---- Validate required files in ISO ----
-            $missing = @()
-            if (-not (Test-Path (Join-Path $driveLetter $names.BootFileBIOS))) { $missing += $names.BootFileBIOS }
-            if (-not (Test-Path (Join-Path $driveLetter $names.BootFileUEFI))) { $missing += $names.BootFileUEFI }
-            if (-not (Test-Path (Join-Path $driveLetter $paths.BootWimInIso))) { $missing += $paths.BootWimInIso }
-            if (-not ((Test-Path (Join-Path $driveLetter $paths.InstallWimInIso)) -or (Test-Path (Join-Path $driveLetter $paths.InstallEsdInIso)))) {
-                $missing += "$($paths.InstallWimInIso) or $($paths.InstallEsdInIso)"
-            }
-
-            if ($missing.Count -gt 0) {
-                throw "Source ISO validation failed. Missing: $($missing -join ', ')"
-            }
-            Write-Output "Source ISO validation passed"
-
-            # Copy the ISO root tree to SrcIsoRoot
-            Write-Output "Copying ISO root tree to $($paths.SrcIsoRoot)..."
-
-            $roboRootArgs = @(
-                $driveLetterRaw,
-                $paths.SrcIsoRoot,
-                '/E',   # copy subdirectories, including Empty ones
-                '/R:2', # retry twice
-                '/W:1', # wait 1 second between retries
-                '/NC',  # No Class - don't show file classes (e.g., "New File", "Same File"), just show the file names
-                '/TEE'  # output to console and log file
-            )
-            Run-App 'robocopy.exe' $roboRootArgs
-
-            # Robocopy exit codes 0-7 are all 'Success' variants
-            if ($LASTEXITCODE -ge 8) {
-                throw "robocopy failed with exit code $LASTEXITCODE"
-            }
-        } finally {
-            if (Get-DiskImage -ImagePath $ISO | Where-Object { $_.Attached }) {
-                Write-Output "Unmounting ISO..."
-                Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
-        Set-Content -Path $srcIsoCopyCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
-        Write-Output "Source ISO copy complete (checkpoint: srciso.copy.done)"
+    $extractMeta = Read-JsonFile -Path $extractJson
+    if (-not $extractMeta) {
+        throw "extract.json not found at '$extractJson'. Run -Extract first."
     }
+    $extractDate = [datetime]::Parse($extractMeta.Date)
 
-    # Sanity check: ensure boot/install images are present in SrcIsoRoot after copy
-    $bootSrc = if (Test-Path $paths.BootWimInSrc) {
-        $paths.BootWimInSrc
-    } else { 
-        throw "Boot image $($paths.BootWimInSrc) not found in source after copy"
-    }
-    $installSrc = if (Test-Path $paths.InstallWimInSrc) {
-        $paths.InstallWimInSrc
-    } elseif (Test-Path $paths.InstallEsdInSrc) {
-        $paths.InstallEsdInSrc
-    } else { 
-        throw "Install image $($paths.InstallWimInSrc) or $($paths.InstallEsdInSrc) not found in source after copy"
-    }
-    Write-Verbose "Existing boot image in source: $bootSrc"
-    Write-Verbose "Existing install image in source: $installSrc"
-
-    # -----------------------------------------------------------------------
-    # Step 2: Hardlink-copy SrcIsoRoot -> DestIsoRoot, excluding wim/esd files
-    # -----------------------------------------------------------------------
-    $destIsoCopyCheckpoint = Join-Path $paths.Checkpoint "destiso.copy.done"
-
-    if (Test-Path $destIsoCopyCheckpoint) {
-        Write-Output "Destination ISO copy already completed (checkpoint: destiso.copy.done)"
-        Write-Debug  "destiso.copy.done timestamp: $(Get-Content $destIsoCopyCheckpoint -Raw -ErrorAction SilentlyContinue)"
-    } else {
-        Write-Output "Hardlink-copying $($paths.SrcIsoRoot) -> $($paths.DestIsoRoot) (excluding boot/install images)..."
-        Ensure-Folder -Path $paths.DestIsoRoot
-
-        $excludeNames = @($names.BootWim, $names.InstallWim, $names.InstallEsd)
-        Write-Verbose "Excluding: $($excludeNames -join ', ')"
-
-        New-HardLinkTree -Source $paths.SrcIsoRoot -Destination $paths.DestIsoRoot -ExcludeFileNames $excludeNames
-
-        Set-Content -Path $destIsoCopyCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
-        Write-Output "Destination ISO copy complete (checkpoint: destiso.copy.done)"
-    }
-
-    # -----------------------------------------------------------------------
-    # Step 3: Export selected indices to per-index uncompressed WIMs
-    # -----------------------------------------------------------------------
-    # If index selection couldn't be resolved before Export (no ISO accessible at startup),
-    # resolve it now from the freshly-copied source WIM.
-    if ($SelectedIndices.Count -eq 0) {
-        Write-Verbose "SelectedIndices is empty; resolving from SrcISO now..."
-        $lateImages = @(Get-WimImageList -WimPath $installSrc)
-        $SelectedIndices = @(Resolve-IndexSelection -AllImages $lateImages -SelectHome:$Home -SelectPro:$Pro -IndicesStr $Indices)
-        Write-Verbose "Late index resolution: $($SelectedIndices.Count) index/indices selected"
-    }
-
-    Write-Output  "Exporting $($SelectedIndices.Count) selected index/indices to $($paths.WimsIndices)..."
-    Write-Verbose "Selected indices: $($SelectedIndices.Index -join ', ')"
     Ensure-Folder -Path $paths.WimsRoot
     Ensure-Folder -Path $paths.WimsIndices
 
-    # Cache boot.wim image list (used for per-index boot export)
-    $bootImageList = @(Get-WimImageList -WimPath $bootSrc)
-    Write-Debug "$($names.BootWim) has $($bootImageList.Count) image(s)"
+    # Locate source WIMs
+    $installSrc = if (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
+                  elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
+                  else { throw "Install image not found in $($paths.SourcesInSrc). Run -Extract first." }
+    $bootSrc = if (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
+               else { throw "Boot image not found in $($paths.SourcesInSrc). Run -Extract first." }
+
+    Write-Verbose "install source: $installSrc"
+    Write-Verbose "boot source   : $bootSrc"
+
+    # Collect WIM metadata and write wim-metadata.json
+    Write-Output "Collecting WIM metadata..."
+    $installImages = @(Get-WimImageList -WimPath $installSrc)
+    $bootImages    = @(Get-WimImageList -WimPath $bootSrc)
+    $osMeta        = Get-ISOMetadataFromWim -WimPath $installSrc
+
+    Write-JsonFile -Path $metadataJson -Data @{
+        ISOPath       = $extractMeta.ISOPath
+        CollectedDate = (Get-Date -Format s)
+        WinOS         = $osMeta.WinOS
+        Version       = $osMeta.Version
+        Arch          = $osMeta.Arch
+        Build         = $osMeta.Build
+        InstallImages = @($installImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+        BootImages    = @($bootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+    }
+    Write-Output "WIM metadata saved ($($installImages.Count) install image(s), $($bootImages.Count) boot image(s))"
+
+    # Resolve index selection if not already set
+    if ($SelectedIndices.Count -eq 0) {
+        Write-Verbose "SelectedIndices empty; resolving from collected metadata..."
+        $SelectedIndices = @(Resolve-IndexSelection -AllImages $installImages -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
+        Write-Verbose "Resolved $($SelectedIndices.Count) index/indices"
+    }
+
+    Write-Output "Exporting $($SelectedIndices.Count) index/indices..."
+    Write-Verbose "Selected: $($SelectedIndices.Index -join ', ')"
+
+    $bootSrcIdx = if ($bootImages | Where-Object { $_.Index -eq 2 }) { 2 } else { 1 }
 
     foreach ($img in $SelectedIndices) {
-        $idx      = $img.Index
-        $imgName  = $img.Name
-        Write-Output "  [Index $idx] Exporting: $imgName"
+        $idx     = $img.Index
+        $imgName = $img.Name
+        Write-Output "  [Index $idx] $imgName"
 
         # -- Export install image --
-        $installDest    = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.InstallWim)
-        $installExtCkpt = "$installDest.extracted"
+        $installDest = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.InstallWim)
+        $installJson = "$installDest.json"
+        $existInstall = Read-JsonFile -Path $installJson
+        $needInstall  = (-not $existInstall) -or ([datetime]::Parse($existInstall.ExportDate) -le $extractDate)
 
-        if (Test-Path $installExtCkpt) {
-            Write-Output "    $names.InstallWim index $idx already extracted (checkpoint exists)"
+        if (-not $needInstall) {
+            Write-Output "    $($names.InstallWim) index $idx already exported ($($existInstall.ExportDate))"
         } else {
-            Write-Output "    Exporting install image index $idx -> $(Split-Path $installDest -Leaf)"
-            $dismInstArgs = @(
-                '/Export-Image',
-                "/SourceImageFile:$installSrc",
-                "/SourceIndex:$idx",
-                "/DestinationImageFile:$installDest",
-                '/Compress:None'
-            )
-            Run-App $dismExe $dismInstArgs
-            if ($LASTEXITCODE -ne 0) {
-                throw "DISM export failed for install index $idx (exit $LASTEXITCODE)"
-            }
-            Set-Content -Path $installExtCkpt -Value (Get-Date -Format s) -Encoding UTF8
-            Write-Output "    install.wim index $idx extracted (checkpoint: $(Split-Path $installExtCkpt -Leaf))"
+            Write-Output "    Exporting $($names.InstallWim) index $idx..."
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc",
+                "/SourceIndex:$idx", "/DestinationImageFile:$installDest", '/Compress:None')
+            if ($LASTEXITCODE -ne 0) { throw "DISM export failed for install index $idx (exit $LASTEXITCODE)" }
+            Write-JsonFile -Path $installJson -Data @{ Index = $idx; Name = $imgName; ExportDate = (Get-Date -Format s) }
+            Write-Output "    $($names.InstallWim) index $idx exported"
         }
 
-        # -- Export boot image (use boot.wim index 2 = Windows Setup PE, fallback to 1) --
-        $bootDest    = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.BootWim)
-        $bootExtCkpt = "$bootDest.extracted"
+        # -- Export boot image --
+        $bootDest = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.BootWim)
+        $bootJson = "$bootDest.json"
+        $existBoot = Read-JsonFile -Path $bootJson
+        $needBoot  = (-not $existBoot) -or ([datetime]::Parse($existBoot.ExportDate) -le $extractDate)
 
-        if (Test-Path $bootExtCkpt) {
-            Write-Output "    $($names.BootWim) index $idx already extracted (checkpoint exists)"
+        if (-not $needBoot) {
+            Write-Output "    $($names.BootWim) index $idx already exported ($($existBoot.ExportDate))"
         } else {
-            # Determine which boot.wim index to use (Windows Setup PE = index 2 by convention)
-            $bootIdx = 2
-            if (-not ($bootImageList | Where-Object { $_.Index -eq $bootIdx })) {
-                $bootIdx = 1
-            }
-            if (-not ($bootImageList | Where-Object { $_.Index -eq $bootIdx })) {
-                Write-Warning "    $($names.BootWim) has no usable index for $idx; skipping boot export"
-                continue
-            }
-
-            Write-Output "    Exporting $($names.BootWim) (source index $bootIdx) -> $(Split-Path $bootDest -Leaf)"
-            $dismBootArgs = @(
-                '/Export-Image',
-                "/SourceImageFile:$bootSrc",
-                "/SourceIndex:$bootIdx",
-                "/DestinationImageFile:$bootDest",
-                '/Compress:None'
-            )
-            Run-App $dismExe $dismBootArgs
+            Write-Output "    Exporting $($names.BootWim) (src idx $bootSrcIdx) for index $idx..."
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc",
+                "/SourceIndex:$bootSrcIdx", "/DestinationImageFile:$bootDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
-                Write-Warning "    DISM boot export failed for index $idx (exit $LASTEXITCODE); skipping"
+                Write-Warning "    DISM boot export failed (exit $LASTEXITCODE); skipping"
             } else {
-                Set-Content -Path $bootExtCkpt -Value (Get-Date -Format s) -Encoding UTF8
-                Write-Output "    $($names.BootWim) index $idx extracted (checkpoint: $(Split-Path $bootExtCkpt -Leaf))"
+                Write-JsonFile -Path $bootJson -Data @{ Index = $idx; SourceBootIndex = $bootSrcIdx; ExportDate = (Get-Date -Format s) }
+                Write-Output "    $($names.BootWim) index $idx exported"
             }
         }
     }
 
-    $exportCheckpoint = Join-Path $paths.Checkpoint "export.done"
-    Set-Content -Path $exportCheckpoint -Value (Get-Date -Format s) -Encoding UTF8
-    Write-Output "Export workflow complete (checkpoint: export.done)"
+    Write-Output "Export workflow complete"
+}
+
+function Invoke-PrepDestISO {
+    [CmdletBinding()]
+    param()
+
+    Write-Verbose "Invoke-PrepDestISO: SrcIsoContent='$($paths.SrcIsoContent)' DestIsoContent='$($paths.DestIsoContent)'"
+    $prepJson   = Join-Path $paths.DestIsoRoot "prep.json"
+    $extractJson = Join-Path $paths.SrcIsoRoot "extract.json"
+    $finalJson   = Join-Path $paths.WimsFinal "final.json"
+    $finalInstall = Join-Path $paths.WimsFinal $names.InstallWim
+    $finalBoot    = Join-Path $paths.WimsFinal $names.BootWim
+
+    if ($DryRun) {
+        Write-Output "[DryRun] Would hardlink-copy $($paths.SrcIsoContent) -> $($paths.DestIsoContent)"
+        Write-Output "[DryRun] Would copy $finalInstall -> $($paths.InstallWimInDest)"
+        Write-Output "[DryRun] Would copy $finalBoot    -> $($paths.BootWimInDest)"
+        return
+    }
+
+    if ($Clean) {
+        if (Test-Path $paths.DestIsoRoot) {
+            Write-Output "Removing: $($paths.DestIsoRoot)"
+            Remove-Item $paths.DestIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
+
+    Write-Output "Starting PrepDestISO workflow..."
+
+    $extractMeta = Read-JsonFile -Path $extractJson
+    if (-not $extractMeta) { throw "extract.json not found. Run -Extract first." }
+    $extractDate = [datetime]::Parse($extractMeta.Date)
+
+    $finalMeta = Read-JsonFile -Path $finalJson
+    $prep      = Read-JsonFile -Path $prepJson
+
+    # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
+    $needHardlink = (-not $prep -or -not $prep.HardlinkDate) -or
+                    ([datetime]::Parse($prep.HardlinkDate) -le $extractDate)
+
+    if ($needHardlink) {
+        Write-Output "Hardlink-copying $($paths.SrcIsoContent) -> $($paths.DestIsoContent) (excluding install/boot images)..."
+        if (Test-Path $paths.DestIsoRoot) {
+            Write-Output "Cleaning existing DestIsoRoot..."
+            Remove-Item $paths.DestIsoRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Ensure-Folder -Path $paths.DestIsoContent
+
+        $excludeNames = @($names.BootWim, $names.InstallWim, $names.InstallEsd)
+        $allFiles = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -File -ErrorAction SilentlyContinue)
+        $total = $allFiles.Count; $done = 0; $lastPct = -1
+
+        Write-Output "  Hardlinking $total files..."
+        foreach ($file in $allFiles) {
+            $done++
+            $pct = [math]::Floor(($done / [math]::Max($total, 1)) * 100)
+            if ($pct -ge ($lastPct + 10)) {
+                Write-Output ("  {0,3}%  {1}/{2} files" -f $pct, $done, $total)
+                $lastPct = $pct - ($pct % 10)
+            }
+            if ($file.Name -in $excludeNames) { continue }
+            $rel  = $file.FullName.Substring($paths.SrcIsoContent.TrimEnd('\').Length).TrimStart('\')
+            $dest = Join-Path $paths.DestIsoContent $rel
+            Ensure-Folder -Path (Split-Path $dest -Parent)
+            if (-not (Test-Path $dest)) {
+                try {
+                    New-Item -ItemType HardLink -Path $dest -Value $file.FullName -Force -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Warning "Hardlink failed for '$rel'; copying: $_"
+                    Copy-Item -Path $file.FullName -Destination $dest -Force
+                }
+            }
+        }
+        Write-Output "  Hardlink tree complete"
+        $prep = @{ HardlinkDate = (Get-Date -Format s) }
+        Write-JsonFile -Path $prepJson -Data $prep
+    } else {
+        Write-Output "DestIsoContent hardlink-copy already current (prep.json: $($prep.HardlinkDate))"
+    }
+
+    $prep = Read-JsonFile -Path $prepJson
+    if (-not $prep) { $prep = @{} }
+
+    # ---- Step B: Copy final install.wim ----
+    $finalInstDate = if ($finalMeta -and $finalMeta.InstallWimDate) { [datetime]::Parse($finalMeta.InstallWimDate) } else { [datetime]::MinValue }
+    $destInstDate  = if ($prep.InstallWimDate) { [datetime]::Parse($prep.InstallWimDate) } else { [datetime]::MinValue }
+
+    if ((Test-Path $finalInstall) -and ($destInstDate -le $finalInstDate)) {
+        Write-Output "Copying $($names.InstallWim) -> $($paths.InstallWimInDest)..."
+        Ensure-Folder -Path (Split-Path $paths.InstallWimInDest -Parent)
+        Copy-Item -Path $finalInstall -Destination $paths.InstallWimInDest -Force
+        $prep['InstallWimDate'] = (Get-Date -Format s)
+        Write-JsonFile -Path $prepJson -Data $prep
+    } elseif (Test-Path $paths.InstallWimInDest) {
+        Write-Output "$($names.InstallWim) already current (prep.json: $($prep.InstallWimDate))"
+    } else {
+        Write-Warning "Final $($names.InstallWim) not found at: $finalInstall (run -Service first)"
+    }
+
+    $prep = Read-JsonFile -Path $prepJson
+    if (-not $prep) { $prep = @{} }
+
+    # ---- Step C: Copy final boot.wim ----
+    $finalBootDate = if ($finalMeta -and $finalMeta.BootWimDate) { [datetime]::Parse($finalMeta.BootWimDate) } else { [datetime]::MinValue }
+    $destBootDate  = if ($prep.BootWimDate) { [datetime]::Parse($prep.BootWimDate) } else { [datetime]::MinValue }
+
+    if ((Test-Path $finalBoot) -and ($destBootDate -le $finalBootDate)) {
+        Write-Output "Copying $($names.BootWim) -> $($paths.BootWimInDest)..."
+        Ensure-Folder -Path (Split-Path $paths.BootWimInDest -Parent)
+        Copy-Item -Path $finalBoot -Destination $paths.BootWimInDest -Force
+        $prep['BootWimDate'] = (Get-Date -Format s)
+        Write-JsonFile -Path $prepJson -Data $prep
+    } elseif (Test-Path $paths.BootWimInDest) {
+        Write-Output "$($names.BootWim) already current (prep.json: $($prep.BootWimDate))"
+    } else {
+        Write-Warning "Final $($names.BootWim) not found at: $finalBoot (run -Service first)"
+    }
+
+    Write-Output "PrepDestISO workflow complete"
 }
 
 # =========================
@@ -1646,35 +1756,20 @@ function Invoke-ServiceWork {
 
     if ($Clean) {
         if (Test-Path $paths.WimsRoot) {
-            Write-Output "Removing WIMs root: $($paths.WimsRoot)"
+            Write-Output "Removing: $($paths.WimsRoot)"
             Remove-Item $paths.WimsRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        # Remove service checkpoints (per-index and final assembly)
-        if (Test-Path $paths.Checkpoint) {
-            Get-ChildItem $paths.Checkpoint -Filter "*.done" -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match '^\d+_|^install\.wim\.done$|^boot\.wim\.done$' } |
-                ForEach-Object {
-                    Write-Verbose "Removing service checkpoint: $($_.Name)"
-                    Remove-Item $_.FullName -Force
-                }
-            Get-ChildItem $paths.Checkpoint -Filter "*.extracted" -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    Write-Verbose "Removing extract checkpoint: $($_.Name)"
-                    Remove-Item $_.FullName -Force
-                }
         }
         return
     }
 
     Write-Output  "Starting Service workflow..."
-    Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)'"
+    Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
     Write-Debug   "Invoke-ServiceWork: KBsSSU='$($paths.KBsSSU)' KBsOSCU='$($paths.KBsOSCU)' WimsMounts='$($paths.WimsMounts)'"
 
     $CompressionType = 'Maximum'  # None, Fast, Maximum
 
     Ensure-Folder -Path $paths.WimsMounts
     Ensure-Folder -Path $paths.WimsServiced
-    Ensure-Folder -Path $paths.Checkpoint
 
     if (-not (Test-Path $paths.WimsIndices)) {
         Write-Output "No indices folder found: $($paths.WimsIndices). Run with -Export first."
@@ -1717,18 +1812,18 @@ function Invoke-ServiceWork {
         $installWimPath = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.InstallWim)
         $bootWimPath    = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.BootWim)
 
-        $installDoneChkpt = Join-Path $paths.Checkpoint ("{0}_{1}.done"      -f $idx, $names.InstallWim)
-        $bootDoneChkpt    = Join-Path $paths.Checkpoint ("{0}_{1}.done"      -f $idx, $names.BootWim)
-        $winreDoneChkpt   = Join-Path $paths.Checkpoint ("{0}_{1}.done"      -f $idx, $names.WinreWim)
-        $winreExtChkpt    = Join-Path $paths.Checkpoint ("{0}_{1}.extracted" -f $idx, $names.WinreWim)
+        $installDoneChkpt = Join-Path $paths.WimsIndices ("{0}_{1}.serviced.json" -f $idx, $names.InstallWim)
+        $bootDoneChkpt    = Join-Path $paths.WimsIndices ("{0}_{1}.serviced.json" -f $idx, $names.BootWim)
+        $winreDoneChkpt   = Join-Path $paths.WimsIndices ("{0}_{1}.serviced.json" -f $idx, $names.WinreWim)
+        $winreExtChkpt    = Join-Path $paths.WimsIndices ("{0}_{1}.extracted.json" -f $idx, $names.WinreWim)
 
         $mountDir      = Join-Path $paths.WimsMounts ("mount_{0}"      -f $idx)
         $winreMountDir = Join-Path $paths.WimsMounts ("winremount_{0}" -f $idx)
         $winreWimPath  = Join-Path $paths.WimsIndices ("{0}_{1}"       -f $idx, $names.WinreWim)
 
         # ---- Service install.wim ----
-        if (Test-Path $installDoneChkpt) {
-            Write-Output "  $($names.InstallWim) index $idx already serviced (checkpoint exists)"
+        if (Read-JsonFile -Path $installDoneChkpt) {
+            Write-Output "  $($names.InstallWim) index $idx already serviced"
         } else {
             if ($hasSSU -or $hasLCU) {
                 Write-Output "  Servicing $($names.InstallWim) for index $idx..."
@@ -1745,17 +1840,17 @@ function Invoke-ServiceWork {
                         Write-Debug "  Checking for $($names.WinreWim) at: $winreInMount"
 
                         if (Test-Path $winreInMount) {
-                            if (Test-Path $winreDoneChkpt) {
-                                Write-Output "  $($names.WinreWim) index $idx already serviced (checkpoint exists)"
+                            if (Read-JsonFile -Path $winreDoneChkpt) {
+                                Write-Output "  $($names.WinreWim) index $idx already serviced"
                             } else {
                                 # Extract winre.wim
-                                if (-not (Test-Path $winreExtChkpt)) {
+                                if (-not (Read-JsonFile -Path $winreExtChkpt)) {
                                     Write-Output "  Extracting $($names.WinreWim) from mounted install image..."
                                     Copy-Item -Path $winreInMount -Destination $winreWimPath -Force
-                                    Set-Content -Path $winreExtChkpt -Value (Get-Date -Format s) -Encoding UTF8
-                                    Write-Output "  $($names.WinreWim) extracted (checkpoint: $($idx)_$($names.WinreWim).extracted)"
+                                    Write-JsonFile -Path $winreExtChkpt -Data @{ Index = $idx; ExtractedDate = (Get-Date -Format s) }
+                                    Write-Output "  $($names.WinreWim) extracted"
                                 } else {
-                                    Write-Output "  $($names.WinreWim) already extracted (checkpoint exists)"
+                                    Write-Output "  $($names.WinreWim) already extracted"
                                 }
 
                                 # Mount winre.wim
@@ -1781,8 +1876,8 @@ function Invoke-ServiceWork {
                                 # Reinsert serviced winre.wim back into mounted install.wim
                                 Write-Output "  Reinserting serviced $($names.WinreWim) into install image..."
                                 Copy-Item -Path $winreWimPath -Destination $winreInMount -Force
-                                Set-Content -Path $winreDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
-                                Write-Output "  $($names.WinreWim) serviced and reinserted (checkpoint: $($idx)_$($names.WinreWim).done)"
+                                Write-JsonFile -Path $winreDoneChkpt -Data @{ Index = $idx; ServicedDate = (Get-Date -Format s) }
+                                Write-Output "  $($names.WinreWim) serviced and reinserted"
                             }
                         } else {
                             Write-Verbose "  $($names.WinreWim) not found in mounted install image at $winreInMount; skipping winre servicing"
@@ -1814,11 +1909,11 @@ function Invoke-ServiceWork {
                     Run-App $dismExe @("/Unmount-Image /MountDir:$mountDir /Commit")
                     if ($LASTEXITCODE -ne 0) { throw "DISM unmount $($names.InstallWim) failed for index $idx (exit $LASTEXITCODE)" }
 
-                    Set-Content -Path $installDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
-                    Write-Output "  $($names.InstallWim) index $idx serviced (checkpoint: $($idx)_$($names.InstallWim).done)"
+                    Write-JsonFile -Path $installDoneChkpt -Data @{ Index = $idx; ServicedDate = (Get-Date -Format s) }
+                    Write-Output "  $($names.InstallWim) index $idx serviced"
 
                 } catch {
-                    Write-Output "  ERROR servicing $($names.InstallWim) index $idx`: $_" 'ERROR'
+                    Write-Output "  ERROR servicing $($names.InstallWim) index $idx`: $_"
                     if (Test-Path $mountDir) {
                         Write-Output "  Discarding mounted $($names.InstallWim)..."
                         Run-App $dismExe @("/Unmount-Image /MountDir:$mountDir /Discard") | Out-Null
@@ -1833,19 +1928,19 @@ function Invoke-ServiceWork {
                     if (Test-Path $winreMountDir) { Remove-Item $winreMountDir -Recurse -Force -ErrorAction SilentlyContinue }
                 }
             } else {
-                Write-Output "  No SSU or LCU packages present - skipping $($names.InstallWim) servicing for index $idx"
-                Set-Content -Path $installDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
+                Write-Output "  No SSU/LCU packages; marking $($names.InstallWim) index $idx as done"
+                Write-JsonFile -Path $installDoneChkpt -Data @{ Index = $idx; ServicedDate = (Get-Date -Format s) }
             }
         }
 
         # ---- Service boot.wim ----
         if (-not (Test-Path $bootWimPath)) {
-            Write-Verbose "  No $($names.BootWim) found for index $idx; skipping boot servicing"
-        } elseif (Test-Path $bootDoneChkpt) {
-            Write-Output "  $($names.BootWim) index $idx already serviced (checkpoint exists)"
+            Write-Verbose "  No $($names.BootWim) for index $idx; skipping boot servicing"
+        } elseif (Read-JsonFile -Path $bootDoneChkpt) {
+            Write-Output "  $($names.BootWim) index $idx already serviced"
         } elseif (-not $hasSSU) {
-            Write-Output "  No SSU packages present; skipping $($names.BootWim) servicing for index $idx"
-            Set-Content -Path $bootDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
+            Write-Output "  No SSU packages; marking $($names.BootWim) index $idx as done"
+            Write-JsonFile -Path $bootDoneChkpt -Data @{ Index = $idx; ServicedDate = (Get-Date -Format s) }
         } else {
             Write-Output "  Servicing $($names.BootWim) for index $idx..."
             Ensure-Folder -Path $mountDir
@@ -1864,14 +1959,14 @@ function Invoke-ServiceWork {
                 }
 
                 Write-Output "  Unmounting $($names.BootWim) index $idx (commit)..."
-                Run-App = $dismExe @("/Unmount-Image /MountDir:$mountDir /Commit")
+                Run-App $dismExe @("/Unmount-Image /MountDir:$mountDir /Commit")
                 if ($LASTEXITCODE -ne 0) { throw "DISM unmount $($names.BootWim) failed for index $idx (exit $LASTEXITCODE)" }
 
-                Set-Content -Path $bootDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
-                Write-Output "  $($names.BootWim) index $idx serviced (checkpoint: $($idx)_$($names.BootWim).done)"
+                Write-JsonFile -Path $bootDoneChkpt -Data @{ Index = $idx; ServicedDate = (Get-Date -Format s) }
+                Write-Output "  $($names.BootWim) index $idx serviced"
 
             } catch {
-                Write-Output "  ERROR servicing $($names.BootWim) index $idx`: $_" 'ERROR'
+                Write-Output "  ERROR servicing $($names.BootWim) index $idx`: $_"
                 if (Test-Path $mountDir) {
                     Run-App $dismExe @("/Unmount-Image /MountDir:$mountDir /Discard") | Out-Null
                 }
@@ -1883,97 +1978,66 @@ function Invoke-ServiceWork {
     }
 
     # -----------------------------------------------------------------------
-    # Final assembly (serial — compression can be slow)
+    # Final assembly → WimsFinal (serial — compression can be slow)
     # -----------------------------------------------------------------------
-    Write-Output "Final assembly: combining serviced indices (compression: $CompressionType)..."
+    Write-Output "Final assembly: combining serviced indices (compression: $CompressionType) -> $($paths.WimsFinal)..."
+    Ensure-Folder -Path $paths.WimsFinal
 
     $compressionMap  = @{ 'None' = 'none'; 'Fast' = 'fast'; 'Maximum' = 'maximum' }
     $dismCompression = $compressionMap[$CompressionType]
+    $finalJson    = Join-Path $paths.WimsFinal "final.json"
+    $finalMeta    = Read-JsonFile -Path $finalJson
+    if (-not $finalMeta) { $finalMeta = @{} }
 
     # -- Assemble final install.wim --
-    $installWimDoneChkpt = Join-Path $paths.Checkpoint ("{0}.done" -f $names.InstallWim)
-    if (Test-Path $installWimDoneChkpt) {
-        Write-Output "Final $($names.InstallWim) already assembled (checkpoint exists)"
+    $finalInstallPath = Join-Path $paths.WimsFinal $names.InstallWim
+    if ($finalMeta.InstallWimDate) {
+        Write-Output "Final $($names.InstallWim) already assembled ($($finalMeta.InstallWimDate))"
     } else {
-        Ensure-Folder -Path (Split-Path $paths.InstallWimInDest -Parent)
-
-        $sortedInstallWims = @(
-            $extractedIndices |
-                ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.InstallWim) } |
-                Where-Object   { Test-Path $_ }
-        )
-
+        $sortedInstallWims = @($extractedIndices |
+            ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.InstallWim) } |
+            Where-Object   { Test-Path $_ })
         if ($sortedInstallWims.Count -eq 0) {
             Write-Warning "No $($names.InstallWim) files found to assemble"
         } else {
-            $firstWim = $sortedInstallWims[0]
-            Write-Output  "Creating final $($names.InstallWim) from: $(Split-Path $firstWim -Leaf)"
-
-            $baseArgs = @(
-                            "/Export-Image",
-                            "/DestinationImageFile:$($paths.InstallWimInDest)"
-                            "/SourceIndex:1",
-                            "/Compress:$dismCompression"
-                        )
-
-            $dismArgs = $baseArgs + @("/SourceImageFile:$firstWim")
-            Run-App $dismExe $dismArgs
+            Write-Output "Creating final $($names.InstallWim)..."
+            $baseArgs = @('/Export-Image', "/DestinationImageFile:$finalInstallPath", '/SourceIndex:1', "/Compress:$dismCompression")
+            Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[0])"))
             if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.InstallWim)) failed (exit $LASTEXITCODE)" }
-
             for ($i = 1; $i -lt $sortedInstallWims.Count; $i++) {
-                $srcWim = $sortedInstallWims[$i]
-                $idxNum = $extractedIndices[$i]
-                Write-Output  "  Appending $($names.InstallWim) index $idxNum..."
-                $dismArgs = $baseArgs + @("/SourceImageFile:$srcWim")
-                Run-App $dismExe $dismArgs
-                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.InstallWim) index $idxNum failed (exit $LASTEXITCODE)" }
+                Write-Output "  Appending $($names.InstallWim) index $($extractedIndices[$i])..."
+                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[$i])"))
+                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.InstallWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
             }
-
-            Set-Content -Path $installWimDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
-            Write-Output "Final $($names.InstallWim) assembled (checkpoint: $($names.InstallWim).done)"
+            $finalMeta['InstallWimDate'] = (Get-Date -Format s)
+            Write-JsonFile -Path $finalJson -Data $finalMeta
+            Write-Output "Final $($names.InstallWim) assembled"
         }
     }
 
     # -- Assemble final boot.wim --
-    $bootWimDoneChkpt = Join-Path $paths.Checkpoint ("{0}.done" -f $names.BootWim)
-    if (Test-Path $bootWimDoneChkpt) {
-        Write-Output "Final $($names.BootWim) already assembled (checkpoint exists)"
+    $finalBootPath = Join-Path $paths.WimsFinal $names.BootWim
+    if ($finalMeta.BootWimDate) {
+        Write-Output "Final $($names.BootWim) already assembled ($($finalMeta.BootWimDate))"
     } else {
-        Ensure-Folder -Path (Split-Path $paths.BootWimInDest -Parent)
-
-        $sortedBootWims = @(
-            $extractedIndices |
-                ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.BootWim) } |
-                Where-Object   { Test-Path $_ }
-        )
-
+        $sortedBootWims = @($extractedIndices |
+            ForEach-Object { Join-Path $paths.WimsIndices ("{0}_{1}" -f $_, $names.BootWim) } |
+            Where-Object   { Test-Path $_ })
         if ($sortedBootWims.Count -eq 0) {
             Write-Warning "No $($names.BootWim) files found to assemble"
         } else {
-            $firstBoot = $sortedBootWims[0]
-            Write-Output  "Creating final $($names.BootWim) from: $(Split-Path $firstBoot -Leaf)"
-            $baseArgs = @(
-                            "/Export-Image",
-                            "/DestinationImageFile:$($paths.BootWimInDest)"
-                            "/SourceIndex:1",
-                            "/Compress:$dismCompression"
-                        )
-
-            $dismArgs = $baseArgs + @("/SourceImageFile:$firstBoot")
-            Run-App $dismExe $dismArgs
+            Write-Output "Creating final $($names.BootWim)..."
+            $baseArgs = @('/Export-Image', "/DestinationImageFile:$finalBootPath", '/SourceIndex:1', "/Compress:$dismCompression")
+            Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[0])"))
             if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.BootWim)) failed (exit $LASTEXITCODE)" }
-
             for ($i = 1; $i -lt $sortedBootWims.Count; $i++) {
-                $srcBoot = $sortedBootWims[$i]
-                $idxNum  = $extractedIndices[$i]
-                Write-Output "  Appending $($names.BootWim) index $idxNum..."
-                $dismArgs = $baseArgs + @("/SourceImageFile:$srcBoot")
-                Run-App $dismExe $dismArgs
-                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.BootWim) index $idxNum failed (exit $LASTEXITCODE)" }
+                Write-Output "  Appending $($names.BootWim) index $($extractedIndices[$i])..."
+                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[$i])"))
+                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.BootWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
             }
-
-            Set-Content -Path $bootWimDoneChkpt -Value (Get-Date -Format s) -Encoding UTF8
-            Write-Output "Final $($names.BootWim) assembled (checkpoint: $($names.BootWim).done)"
+            $finalMeta['BootWimDate'] = (Get-Date -Format s)
+            Write-JsonFile -Path $finalJson -Data $finalMeta
+            Write-Output "Final $($names.BootWim) assembled"
         }
     }
 
@@ -2627,49 +2691,65 @@ endlocal
 # Create the Destination ISO
 # ==============================
 function Invoke-CreateISOWork {
+    Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
+    $prepJson = Join-Path $paths.DestIsoRoot "prep.json"
+
     if ($Clean) {
         if ($DryRun) {
             Write-Output "[DryRun] Would remove: $DestISO"
-        } else {
-            if (Test-Path $DestISO) {
-                Write-Output "Removing: $DestISO"
-                Remove-Item $DestISO -Force
-            }
+        } elseif ($DestISO -and (Test-Path $DestISO)) {
+            Write-Output "Removing: $DestISO"
+            Remove-Item $DestISO -Force
         }
         return
     }
 
     if ($DryRun) {
-        Write-Output "[DryRun] Would write: $DestISO"
+        Write-Output "[DryRun] Would create ISO: $DestISO"
+        Write-Output "[DryRun]   from: $($paths.DestIsoContent)"
         return
     }
 
-    Write-Output "Starting Create ISO workflow..."
+    # Depend on prep.json — fail if DestISO content has not been prepared
+    $prepMeta = Read-JsonFile -Path $prepJson
+    if (-not $prepMeta) {
+        throw "prep.json not found at '$prepJson'. Run -Prep to prepare the destination ISO content first."
+    }
+
+    if (-not $oscdimgExe) { throw "oscdimg.exe not found. Install Windows ADK or specify -oscdimg." }
+    if (-not $DestISO)    { throw "DestISO path is not set. Specify -DestISO or ensure -ISO is provided." }
+    if (-not (Test-Path $paths.DestIsoContent)) {
+        throw "DestIsoContent not found: $($paths.DestIsoContent). Run -Prep first."
+    }
+
+    Write-Output "Starting CreateISO workflow..."
 
     $etfs = $paths.BIOSInDest
     $efis = $paths.UEFIInDest
-    # Sanity check for boot files before invoking oscdimg
     if (-not (Test-Path $etfs)) { throw "Missing BIOS boot file: $etfs" }
     if (-not (Test-Path $efis)) { throw "Missing UEFI boot file: $efis" }
 
-    $IsoVolumeLabel = "Win$($OS)_$($Version)_$($Arch)_KBs"
-
+    $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
-    $oscdimgfsArgs = @(
-        "-m",                   # Ignore size limits
-        "-o",                   # Optimize storage by encoding duplicate files only once
-        "-u2",                  # Use UTF-8 encoding for file names (allows for long file names and Unicode characters) 
-        "-udfver102",           # Use UDF 1.02 filesystem version (max compatibility, required for some boot scenarios)
-        "-l$($IsoVolumeLabel)", # Set volume label
-        "-bootdata:$bootdata",  # Define multi-boot configuration for BIOS and UEFI
-        $paths.DestIsoRoot,
-        $DestISO)
 
-    Write-Output  "Building ISO: $DestISO"
-    Run-App $oscdimgExe $oscdimgfsArgs
+    $oscdimgArgs = @(
+        "-m",                    # Ignore size limits
+        "-o",                    # Optimize storage (single-instance files)
+        "-u2",                   # UDF file system
+        "-udfver102",            # UDF 1.02 compatibility
+        "-l$IsoVolumeLabel",     # Volume label
+        "-bootdata:$bootdata",   # Dual-boot BIOS + UEFI
+        $paths.DestIsoContent,
+        $DestISO
+    )
+
+    Write-Output "Building ISO: $DestISO"
+    Write-Verbose "Source: $($paths.DestIsoContent)"
+    Run-App $oscdimgExe $oscdimgArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "OSCDIMG failed to build ISO $DestISO (exit $LASTEXITCODE)"
+        throw "oscdimg failed to build ISO (exit $LASTEXITCODE)"
     }
+    Write-Output "ISO created: $DestISO"
 }
 
 # Real work starts here
@@ -2704,18 +2784,20 @@ $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
 $paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
 $paths.InstallWimInIso       = Join-Path $names.Sources $names.InstallWim
 $paths.SrcIsoRoot            = Join-Path $Folder $names.SrcIso
-$paths.BIOSInSrc             = Join-Path $paths.SrcIsoRoot $names.BootFileBIOS
-$paths.UEFIInSrc             = Join-Path $paths.SrcIsoRoot $names.BootFileUEFI
-$paths.SourcesInSrc          = Join-Path $paths.SrcIsoRoot $names.Sources
+$paths.SrcIsoContent         = Join-Path $paths.SrcIsoRoot $names.Content
+$paths.BIOSInSrc             = Join-Path $paths.SrcIsoContent $names.BootFileBIOS
+$paths.UEFIInSrc             = Join-Path $paths.SrcIsoContent $names.BootFileUEFI
+$paths.SourcesInSrc          = Join-Path $paths.SrcIsoContent $names.Sources
 $paths.BootWimInSrc          = Join-Path $paths.SourcesInSrc $names.BootWim
 $paths.InstallEsdInSrc       = Join-Path $paths.SourcesInSrc $names.InstallEsd
 $paths.InstallWimInSrc       = Join-Path $paths.SourcesInSrc $names.InstallWim
 $paths.DestIsoRoot           = Join-Path $Folder $names.DestIso
-$paths.SourcesInDest         = Join-Path $paths.DestIsoRoot $names.Sources
+$paths.DestIsoContent        = Join-Path $paths.DestIsoRoot $names.Content
+$paths.BIOSInDest            = Join-Path $paths.DestIsoContent $names.BootFileBIOS
+$paths.UEFIInDest            = Join-Path $paths.DestIsoContent $names.BootFileUEFI
+$paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.BIOSInDest            = Join-Path $paths.DestIsoRoot $names.BootFileBIOS
-$paths.UEFIInDest            = Join-Path $paths.DestIsoRoot $names.BootFileUEFI
 $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $Folder $names.Registry
 $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
@@ -2734,11 +2816,6 @@ $paths.WimsRoot              = Join-Path $Folder $names.Wims
 foreach ($u in $wimDirs) {
     $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
 }
-$paths.Checkpoint            = Join-Path $Folder $names.Checkpoint
-$paths.SrcIsoCheckpoint      = Join-Path $paths.Checkpoint $names.SrcIso
-$paths.DestIsoCheckpoint     = Join-Path $paths.Checkpoint $names.DestIso
-$paths.KBsCheckpoint         = Join-Path $paths.Checkpoint $names.KBs
-$paths.WimsCheckpoint        = Join-Path $paths.Checkpoint $names.Wims
 
 # ==============================
 # Resolve source ISO
@@ -2747,8 +2824,7 @@ if (-not $ISO) {
     Write-Verbose "No -ISO specified; searching for *.iso in: $Folder"
     $isoFiles = @(Get-ChildItem -Path $Folder -Filter '*.iso' -File -ErrorAction SilentlyContinue)
     if ($isoFiles.Count -eq 0) {
-        # ISO is only required when -Export (or -All / default) is in effect
-        $needsISO = $Export -or (-not ($KB -or $Service -or $Drivers -or $Reg -or $Files))
+        $needsISO = $Extract -or $Export -or (-not ($KB -or $Service -or $Drivers -or $Reg -or $Files -or $Prep -or $CreateISO))
         if ($needsISO -and -not $Clean -and -not $DryRun) {
             Write-Error "No .iso file found in: $Folder`nPlace the Windows ISO there or use -ISO to specify its path."
             exit 1
@@ -2780,64 +2856,68 @@ if (-not $DestISO -and $ISO) {
 if (-not $DryRun -and -not $Clean) {
     # ==============================
     # Read ISO / WIM metadata for WinOS / Version / Arch and index list
+    # Priority: 1) wim-metadata.json  2) SrcIsoContent WIMs  3) mount ISO
     # ==============================
     $allImages       = @()
     $isoMetaResolved = $false
+    $metaSrc         = $null
 
-    # Prefer already-copied SrcISO when resuming
-    $srcIsoCopyDone = Join-Path $paths.Checkpoint "srciso.copy.done"
-    if ((Test-Path $srcIsoCopyDone) -and (Test-Path $paths.SourcesInSrc)) {
-        $existingWim = if (Test-Path $paths.InstallWimInSrc) {
-            $paths.InstallWimInSrc
-        } elseif (Test-Path $paths.InstallEsdInSrc) {
-            $paths.InstallEsdInSrc
-        } else { $null }
+    # 1) Prefer cached wim-metadata.json if it matches the current ISO
+    $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
+    $wimMeta      = Read-JsonFile -Path $metadataJson
+    if ($wimMeta -and ($wimMeta.ISOPath -eq $ISO -or -not $ISO)) {
+        Write-Verbose "Loading index list from wim-metadata.json"
+        $allImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+        if (-not $WinOS)   { $WinOS   = $wimMeta.WinOS }
+        if (-not $Version) { $Version = $wimMeta.Version }
+        if (-not $Arch)    { $Arch    = $wimMeta.Arch }
+        if ($allImages.Count -gt 0) { $isoMetaResolved = $true; $metaSrc = "wim-metadata.json" }
+    }
 
+    # 2) Fall back to SrcIsoContent on disk
+    if (-not $isoMetaResolved -and (Test-Path $paths.SourcesInSrc)) {
+        $existingWim = if (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
+                       elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
+                       else { $null }
         if ($existingWim) {
-            Write-Verbose "Reading metadata from existing SrcISO: $existingWim"
+            Write-Verbose "Reading metadata from SrcIsoContent: $existingWim"
             try {
                 $allImages = @(Get-WimImageList -WimPath $existingWim)
                 if (-not $WinOS -or -not $Version -or -not $Arch) {
                     $meta = Get-ISOMetadataFromWim -WimPath $existingWim
-                    if (-not $WinOS)   { $WinOS   = $meta.WinOS;   Write-Verbose "WinOS auto-detected   : $WinOS" }
-                    if (-not $Version) { $Version = $meta.Version; Write-Verbose "Version auto-detected : $Version" }
-                    if (-not $Arch)    { $Arch    = $meta.Arch;    Write-Verbose "Arch auto-detected    : $Arch" }
+                    if (-not $WinOS)   { $WinOS   = $meta.WinOS }
+                    if (-not $Version) { $Version = $meta.Version }
+                    if (-not $Arch)    { $Arch    = $meta.Arch }
                 }
-                $isoMetaResolved = $true
-            } catch {
-                Write-Warning "Could not read metadata from SrcISO: $_"
-            }
+                $isoMetaResolved = $true; $metaSrc = "SrcIsoContent"
+            } catch { Write-Warning "Could not read metadata from SrcIsoContent: $_" }
         }
     }
 
-    # Mount the ISO briefly if we still need metadata
+    # 3) Mount the ISO briefly if still needed
     if (-not $isoMetaResolved -and $ISO -and (Test-Path $ISO)) {
         Write-Verbose "Mounting ISO for metadata: $ISO"
         $metaDiskImg = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction SilentlyContinue
         if ($metaDiskImg) {
             try {
-                $metaVol   = $metaDiskImg | Get-Volume
-                $metaDrive = $metaVol.DriveLetter + ':\'
-                $metaWim   = if (Test-Path (Join-Path $metaDrive "sources\$($names.InstallWim)")) {
-                                Join-Path $metaDrive "sources\$($names.InstallWim)"
-                            } elseif (Test-Path (Join-Path $metaDrive "sources\$($names.InstallEsd)")) {
-                                Join-Path $metaDrive "sources\$($names.InstallEsd)"
-                            } else { $null }
-
+                $metaDrive = ($metaDiskImg | Get-Volume).DriveLetter + ':\'
+                $metaWim   = if (Test-Path "$metaDrive$($names.Sources)\$($names.InstallWim)") {
+                                 "$metaDrive$($names.Sources)\$($names.InstallWim)"
+                             } elseif (Test-Path "$metaDrive$($names.Sources)\$($names.InstallEsd)") {
+                                 "$metaDrive$($names.Sources)\$($names.InstallEsd)"
+                             } else { $null }
                 if ($metaWim) {
-                    Write-Verbose "Reading metadata from mounted ISO: $metaWim"
+                    Write-Verbose "Reading metadata from mounted ISO"
                     $allImages = @(Get-WimImageList -WimPath $metaWim)
                     if (-not $WinOS -or -not $Version -or -not $Arch) {
                         $meta = Get-ISOMetadataFromWim -WimPath $metaWim
-                        if (-not $WinOS)   { $WinOS   = $meta.WinOS;   Write-Verbose "WinOS auto-detected   : $WinOS" }
-                        if (-not $Version) { $Version = $meta.Version; Write-Verbose "Version auto-detected : $Version" }
-                        if (-not $Arch)    { $Arch    = $meta.Arch;    Write-Verbose "Arch auto-detected    : $Arch" }
+                        if (-not $WinOS)   { $WinOS   = $meta.WinOS }
+                        if (-not $Version) { $Version = $meta.Version }
+                        if (-not $Arch)    { $Arch    = $meta.Arch }
                     }
-                    $isoMetaResolved = $true
+                    $isoMetaResolved = $true; $metaSrc = "mounted ISO"
                 }
-            } finally {
-                Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
-            }
+            } finally { Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null }
         }
     }
 
@@ -2851,15 +2931,13 @@ if (-not $DryRun -and -not $Clean) {
     # ==============================
     if ($ShowIndices) {
         if ($allImages.Count -eq 0) {
-            Write-Error "Cannot show indices: no ISO is accessible and SrcISO has not been populated yet. Run -Export first, or provide -ISO."
+            Write-Error "Cannot show indices: no metadata available. Run -Extract or -Export first, or provide -ISO."
             exit 1
         }
-        Write-Output "`nAvailable images in $($names.InstallWim):`n"
+        Write-Output "`nAvailable images in $($names.InstallWim) [source: $metaSrc]:`n"
         Write-Output ("{0,6}  {1}" -f 'Index', 'Name')
         Write-Output ("{0,6}  {1}" -f '------', '----')
-        foreach ($img in $allImages) {
-            Write-Output ("{0,6}  {1}" -f $img.Index, $img.Name)
-        }
+        foreach ($img in $allImages) { Write-Output ("{0,6}  {1}" -f $img.Index, $img.Name) }
         Write-Output ""
         exit 0
     }
@@ -2871,8 +2949,7 @@ if (-not $DryRun -and -not $Clean) {
     if ($allImages.Count -gt 0) {
         $SelectedIndices = @(Resolve-IndexSelection -AllImages $allImages -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
     } else {
-        Write-Verbose "Image list unavailable yet - index selection deferred until Export"
-        # Will be populated during Invoke-ExportWork from the already-mounted ISO
+        Write-Verbose "Image list unavailable yet; index selection deferred until -Export"
         $SelectedIndices = @()
     }
 }
@@ -2881,24 +2958,32 @@ if (-not $DryRun -and -not $Clean) {
 # Determine work modes
 # ==============================
 $workSwitches = @()
+if ($Extract)   { $workSwitches += 'Extract' }
 if ($Export)    { $workSwitches += 'Export' }
 if ($KB)        { $workSwitches += 'KB' }
 if ($Service)   { $workSwitches += 'Service' }
 if ($Drivers)   { $workSwitches += 'Drivers' }
 if ($Reg)       { $workSwitches += 'Reg' }
 if ($Files)     { $workSwitches += 'Files' }
+if ($Prep)      { $workSwitches += 'Prep' }
 if ($CreateISO) { $workSwitches += 'CreateISO' }
 
-if ($All -or -not $workSwitches) {
-    $Export    = $true
-    $KB        = $true
-    $Service   = $true
-    $Drivers   = $true
-    $Reg       = $true
-    $Files     = $true
-    $CreateISO = $true
-    $All       = $true
-    $workSwitches = @('All')
+if ($All -or $Most -or (-not $workSwitches)) {
+    $Extract = $true
+    $Export  = $true
+    $KB      = $true
+    $Service = $true
+    $Drivers = $true
+    $Reg     = $true
+    $Files   = $true
+    $Prep    = $true
+    if ($Most) {
+        $workSwitches = @('Most')
+    } else {
+        $CreateISO = $true
+        $All       = $true
+        $workSwitches = @('All')
+    }
 }
 
 Write-Output "Target profile: Windows $WinOS $Version $Arch"
@@ -2988,11 +3073,12 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 # Main orchestration
 # ==============================
 
-if ($Export)  { Invoke-ExportWork }
-if ($KB)      { Invoke-KBWork }
-if ($Service) { Invoke-ServiceWork }
-if ($Drivers) { Invoke-DriverWork }
-if ($Reg)     { Invoke-RegWork }
+if ($Extract)   { Invoke-ExtractISO }
+if ($Export)    { Invoke-Export }
+if ($KB)        { Invoke-KBWork }
+if ($Service)   { Invoke-ServiceWork }
+if ($Drivers)   { Invoke-DriverWork }
+if ($Reg)       { Invoke-RegWork }
 if ($Files) {
     Write-InstallDriversCmd
     Write-InstallRegsCmd
@@ -3000,18 +3086,7 @@ if ($Files) {
     Write-SetupConfigFiles
     Write-SetupCmdFiles
 }
+if ($Prep)      { Invoke-PrepDestISO }
 if ($CreateISO) { Invoke-CreateISOWork }
-
-# Little clean up
-if ($Clean -and $All) {
-    # Remove checkpoint folder if we're doing a full clean
-    $checkpoint = $paths.Checkpoint
-    if ($DryRun) {
-        Write-Output "[DryRun] Would remove: $checkpoint"
-    } elseif (Test-Path $checkpoint) {
-        Write-Output "Removing: $checkpoint"
-        Remove-Item $checkpoint -Recurse -Force
-    }
-}
 
 Write-Output "Completed"
