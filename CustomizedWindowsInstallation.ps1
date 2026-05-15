@@ -414,131 +414,86 @@ function Run-App {
 # Tool discovery
 # ==============================
 
-function Resolve-DismExe {
+function Find-ADKTool {
+    # Locate an ADK tool (e.g. dism.exe, oscdimg.exe) using this priority:
+    #   1. Explicit path supplied by the caller
+    #   2. Windows ADK installation (preferred when -PreferADK or -UseADK)
+    #   3. System32 / PATH
+    # Returns the full path on success, $null on failure.
     [CmdletBinding()]
     param(
-        [string]$ExplicitPath,
-        [switch]$PreferADK,
-        [switch]$ForceSystem
+        [Parameter(Mandatory)]
+        [string]$ToolName,       # filename, e.g. 'dism.exe'
+
+        [Parameter(Mandatory)]
+        [string]$ADKSubfolder,   # subfolder under each arch dir, e.g. 'DISM' or 'Oscdimg'
+
+        [string]$ExplicitPath,   # value of -dism / -oscdimg parameter
+        [switch]$PreferADK,      # -UseADK
+        [switch]$ForceSystem     # -UseSystem
     )
 
-    Write-Debug "Resolve-DismExe: ExplicitPath='$ExplicitPath' PreferADK=$PreferADK ForceSystem=$ForceSystem"
+    Write-Debug "Find-ADKTool: '$ToolName' ExplicitPath='$ExplicitPath' PreferADK=$PreferADK ForceSystem=$ForceSystem"
 
+    # 1. Explicit override
     if ($ExplicitPath) {
         if (-not (Test-Path $ExplicitPath)) {
-            Write-Warning "Explicit dism path not found: $ExplicitPath"
+            Write-Warning "Explicit path not found for $ToolName`: $ExplicitPath"
             return $null
         }
-        Write-Verbose "Using explicit dism: $ExplicitPath"
+        Write-Verbose "Using explicit $ToolName`: $ExplicitPath"
         return $ExplicitPath
     }
 
+    # Search ADK installations
     $adkRoots = @(
         "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools",
         "${env:ProgramFiles}\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools"
     )
     $adkArches = @('amd64', 'arm64', 'x86')
 
-    $adkDism = $null
+    $adkPath = $null
     foreach ($root in $adkRoots) {
-        foreach ($a in $adkArches) {
-            $candidate = Join-Path $root "$a\DISM\dism.exe"
-            if (Test-Path $candidate) { $adkDism = $candidate; break }
+        foreach ($arch in $adkArches) {
+            $candidate = Join-Path $root "$arch\$ADKSubfolder\$ToolName"
+            if (Test-Path $candidate) { $adkPath = $candidate; break }
         }
-        if ($adkDism) { break }
+        if ($adkPath) { break }
     }
 
-    $systemDism = Join-Path $env:SystemRoot 'System32\dism.exe'
+    # System / PATH fallback: try System32 first, then PATH
+    $systemPath = Join-Path $env:SystemRoot "System32\$ToolName"
+    if (-not (Test-Path $systemPath)) {
+        $cmd = Get-Command $ToolName -ErrorAction SilentlyContinue
+        $systemPath = if ($cmd) { $cmd.Source } else { $null }
+    }
 
+    # 2. Apply priority
     if ($ForceSystem) {
-        if (Test-Path $systemDism) {
-            Write-Verbose "Using system dism (forced): $systemDism"
-            return $systemDism
+        if ($systemPath) {
+            Write-Verbose "Using system $ToolName (forced): $systemPath"
+            return $systemPath
         }
-        Write-Warning "System dism.exe not found at: $systemDism"
+        Write-Warning "$ToolName not found in System32 or PATH"
         return $null
     }
 
-    if ($PreferADK -and $adkDism) {
-        Write-Verbose "Using ADK dism (preferred): $adkDism"
-        return $adkDism
+    if ($PreferADK -and $adkPath) {
+        Write-Verbose "Using ADK $ToolName (preferred): $adkPath"
+        return $adkPath
     }
 
-    if ($adkDism) {
-        Write-Verbose "Using ADK dism (auto-discovered): $adkDism"
-        return $adkDism
+    if ($adkPath) {
+        Write-Verbose "Using ADK $ToolName (auto-discovered): $adkPath"
+        return $adkPath
     }
 
-    if (Test-Path $systemDism) {
-        Write-Verbose "Using system dism (fallback): $systemDism"
-        return $systemDism
+    if ($systemPath) {
+        Write-Verbose "Using system $ToolName (fallback): $systemPath"
+        return $systemPath
     }
 
-    Write-Warning "dism.exe not found. Install Windows ADK or specify -dism."
-    return $null
-}
-
-function Resolve-OscdimgExe {
-    [CmdletBinding()]
-    param(
-        [string]$ExplicitPath,
-        [switch]$PreferADK,
-        [switch]$ForceSystem
-    )
-
-    Write-Debug "Resolve-OscdimgExe: ExplicitPath='$ExplicitPath' PreferADK=$PreferADK ForceSystem=$ForceSystem"
-
-    if ($ExplicitPath) {
-        if (-not (Test-Path $ExplicitPath)) {
-            Write-Warning "Explicit oscdimg path not found: $ExplicitPath"
-            return $null
-        }
-        Write-Verbose "Using explicit oscdimg: $ExplicitPath"
-        return $ExplicitPath
-    }
-
-    $adkRoots = @(
-        "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools",
-        "${env:ProgramFiles}\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools"
-    )
-    $adkArches = @('amd64', 'arm64', 'x86')
-
-    $adkOscdimg = $null
-    foreach ($root in $adkRoots) {
-        foreach ($a in $adkArches) {
-            $candidate = Join-Path $root "$a\Oscdimg\oscdimg.exe"
-            if (Test-Path $candidate) { $adkOscdimg = $candidate; break }
-        }
-        if ($adkOscdimg) { break }
-    }
-
-    if ($ForceSystem) {
-        $pathCmd = Get-Command 'oscdimg.exe' -ErrorAction SilentlyContinue
-        if ($pathCmd) {
-            Write-Verbose "Using PATH oscdimg (forced): $($pathCmd.Source)"
-            return $pathCmd.Source
-        }
-        Write-Warning "oscdimg.exe not found in PATH"
-        return $null
-    }
-
-    if ($PreferADK -and $adkOscdimg) {
-        Write-Verbose "Using ADK oscdimg (preferred): $adkOscdimg"
-        return $adkOscdimg
-    }
-
-    if ($adkOscdimg) {
-        Write-Verbose "Using ADK oscdimg (auto-discovered): $adkOscdimg"
-        return $adkOscdimg
-    }
-
-    $pathCmd = Get-Command 'oscdimg.exe' -ErrorAction SilentlyContinue
-    if ($pathCmd) {
-        Write-Verbose "Using PATH oscdimg: $($pathCmd.Source)"
-        return $pathCmd.Source
-    }
-
-    Write-Warning "oscdimg.exe not found. ISO creation will not be available."
+    Write-Warning "$ToolName not found. Install Windows ADK or specify the path explicitly."
     return $null
 }
 
@@ -2863,8 +2818,8 @@ Write-Verbose "Resolved working folder: $Folder"
 # Resolve DISM and oscdimg
 # ==============================
 Write-Verbose "Resolving tool paths..."
-$dismExe    = Resolve-DismExe    -ExplicitPath $dism    -PreferADK:$UseADK -ForceSystem:$UseSystem
-$oscdimgExe = Resolve-OscdimgExe -ExplicitPath $oscdimg -PreferADK:$UseADK -ForceSystem:$UseSystem
+$dismExe    = Find-ADKTool -ToolName 'dism.exe'    -ADKSubfolder 'DISM'    -ExplicitPath $dism    -PreferADK:$UseADK -ForceSystem:$UseSystem
+$oscdimgExe = Find-ADKTool -ToolName 'oscdimg.exe' -ADKSubfolder 'Oscdimg' -ExplicitPath $oscdimg -PreferADK:$UseADK -ForceSystem:$UseSystem
 
 if (-not $dismExe) {
     Write-Output "ERROR: dism.exe is required but was not found."
