@@ -501,71 +501,54 @@ function Find-ADKTool {
 # ISO / WIM introspection
 # ==============================
 
-function Get-WimImageList {
+function Get-WimMetadata {
+    # Reads a WIM file and returns both the full image list and OS details
+    # (WinOS, Version, Arch, Build) in a single object, making two DISM calls:
+    #   /Get-WimInfo            — to enumerate all images (Index + Name)
+    #   /Get-WimInfo /Index:1   — to get Version and Architecture from index 1
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$WimPath
     )
 
-    Write-Debug "Get-WimImageList: WimPath='$WimPath'"
-    Write-Verbose "Reading image list from: $WimPath"
+    Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
 
-    $output = & $dismExe /Get-WimInfo "/WimFile:$WimPath" 2>&1
+    # --- Call 1: enumerate all images ---
+    $listOutput = Run-App $dismExe $('/Get-WimInfo, "/WimFile:$WimPath")
+    $images     = [System.Collections.Generic.List[object]]::new()
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "DISM /Get-WimInfo failed (exit $LASTEXITCODE) for: $WimPath"
-        return @()
-    }
-
-    $images      = [System.Collections.Generic.List[object]]::new()
-    $currentIdx  = $null
-    $currentName = $null
-
-    foreach ($line in $output) {
-        Write-Debug "  WimInfo> $line"
-        if ($line -match '^\s*Index\s*:\s*(\d+)') {
-            if ($null -ne $currentIdx) {
-                $images.Add([PSCustomObject]@{ Index = $currentIdx; Name = $currentName })
+    if ($LASTEXITCODE -eq 0) {
+        $currentIdx  = $null
+        $currentName = $null
+        foreach ($line in $listOutput) {
+            Write-Debug "  WimInfo> $line"
+            if ($line -match '^\s*Index\s*:\s*(\d+)') {
+                if ($null -ne $currentIdx) {
+                    $images.Add([PSCustomObject]@{ Index = $currentIdx; Name = $currentName })
+                }
+                $currentIdx  = [int]$Matches[1]
+                $currentName = ''
+            } elseif ($null -ne $currentIdx -and $line -match '^\s*Name\s*:\s*(.+)') {
+                $currentName = $Matches[1].Trim()
             }
-            $currentIdx  = [int]$Matches[1]
-            $currentName = ''
         }
-        elseif ($null -ne $currentIdx -and $line -match '^\s*Name\s*:\s*(.+)') {
-            $currentName = $Matches[1].Trim()
+        if ($null -ne $currentIdx) {
+            $images.Add([PSCustomObject]@{ Index = $currentIdx; Name = $currentName })
         }
-    }
-    if ($null -ne $currentIdx) {
-        $images.Add([PSCustomObject]@{ Index = $currentIdx; Name = $currentName })
+        Write-Verbose "Found $($images.Count) image(s) in: $WimPath"
+    } else {
+        Write-Warning "DISM /Get-WimInfo failed (exit $LASTEXITCODE) for: $WimPath"
     }
 
-    Write-Verbose "Found $($images.Count) image(s) in WIM"
-    return $images.ToArray()
-}
-
-function Get-ISOMetadataFromWim {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$WimPath
-    )
-
-    Write-Debug "Get-ISOMetadataFromWim: WimPath='$WimPath'"
-
-    $output = & $dismExe /Get-WimInfo "/WimFile:$WimPath" /Index:1 2>&1
-
+    # --- Call 2: OS details from index 1 ---
     $buildNumber = 0
     $archStr     = 'x64'
-
-    foreach ($line in $output) {
-        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)\.') {
-            $buildNumber = [int]$Matches[1]
-        }
-        if ($line -match '^\s*Architecture\s*:\s*(.+)') {
-            $archStr = $Matches[1].Trim()
-        }
+    $detailOutput = & $dismExe /Get-WimInfo "/WimFile:$WimPath" /Index:1 2>&1
+    foreach ($line in $detailOutput) {
+        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)\.') { $buildNumber = [int]$Matches[1] }
+        if ($line -match '^\s*Architecture\s*:\s*(.+)')          { $archStr     = $Matches[1].Trim() }
     }
-
     Write-Debug "  build=$buildNumber arch='$archStr'"
 
     $detectedWinOS = if ($buildNumber -ge 22000) { '11' } else { '10' }
@@ -581,7 +564,7 @@ function Get-ISOMetadataFromWim {
         { $_ -ge 19043 } { '21H1'; break }
         { $_ -ge 19042 } { '20H2'; break }
         { $_ -ge 19041 } { '2004'; break }
-        default           { if ($detectedWinOS -eq '11') { '25H2' } else { '22H2' }; break }
+        default          { if ($detectedWinOS -eq '11') { '25H2' } else { '22H2' }; break }
     }
 
     $detectedArch = switch -Wildcard ($archStr.ToLower()) {
@@ -592,6 +575,7 @@ function Get-ISOMetadataFromWim {
     }
 
     return [PSCustomObject]@{
+        Images  = $images.ToArray()
         WinOS   = $detectedWinOS
         Version = $detectedVersion
         Arch    = $detectedArch
@@ -849,26 +833,25 @@ function Invoke-Export {
 
     # Collect WIM metadata and write wim-metadata.json
     Write-Output "Collecting WIM metadata..."
-    $installImages = @(Get-WimImageList -WimPath $installSrc)
-    $bootImages    = @(Get-WimImageList -WimPath $bootSrc)
-    $osMeta        = Get-ISOMetadataFromWim -WimPath $installSrc
+    $installMeta = Get-WimMetadata -WimPath $installSrc
+    $bootImages  = (Get-WimMetadata -WimPath $bootSrc).Images
 
     Write-JsonFile -Path $metadataJson -Data @{
         ISOPath       = $extractMeta.ISOPath
         CollectedDate = (Get-Date -Format s)
-        WinOS         = $osMeta.WinOS
-        Version       = $osMeta.Version
-        Arch          = $osMeta.Arch
-        Build         = $osMeta.Build
-        InstallImages = @($installImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-        BootImages    = @($bootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+        WinOS         = $installMeta.WinOS
+        Version       = $installMeta.Version
+        Arch          = $installMeta.Arch
+        Build         = $installMeta.Build
+        InstallImages = @($installMeta.Images | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+        BootImages    = @($bootImages          | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
     }
-    Write-Output "WIM metadata saved ($($installImages.Count) install image(s), $($bootImages.Count) boot image(s))"
+    Write-Output "WIM metadata saved ($($installMeta.Images.Count) install image(s), $($bootImages.Count) boot image(s))"
 
     # Resolve index selection if not already set
     if ($SelectedIndices.Count -eq 0) {
         Write-Verbose "SelectedIndices empty; resolving from collected metadata..."
-        $SelectedIndices = @(Resolve-IndexSelection -AllImages $installImages -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
+        $SelectedIndices = @(Resolve-IndexSelection -AllImages $installMeta.Images -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
         Write-Verbose "Resolved $($SelectedIndices.Count) index/indices"
     }
 
@@ -892,8 +875,8 @@ function Invoke-Export {
             Write-Output "    $($names.InstallWim) index $idx already exported ($($existInstall.ExportDate))"
         } else {
             Write-Output "    Exporting $($names.InstallWim) index $idx..."
-            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc",
-                "/SourceIndex:$idx", "/DestinationImageFile:$installDest", '/Compress:None')
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc", "/SourceIndex:$idx",
+                               "/DestinationImageFile:$installDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.InstallWim) index $idx (exit $LASTEXITCODE) — skipping this index"
                 continue
@@ -912,8 +895,8 @@ function Invoke-Export {
             Write-Output "    $($names.BootWim) index $idx already exported ($($existBoot.ExportDate))"
         } else {
             Write-Output "    Exporting $($names.BootWim) (src idx $bootSrcIdx) for index $idx..."
-            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc",
-                "/SourceIndex:$bootSrcIdx", "/DestinationImageFile:$bootDest", '/Compress:None')
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc", "/SourceIndex:$bootSrcIdx",
+                               "/DestinationImageFile:$bootDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.BootWim) index $idx (exit $LASTEXITCODE) — skipping boot image for this index"
             } else {
@@ -1925,42 +1908,7 @@ function Invoke-DriverWork {
 # ==============================
 function Invoke-RegWork {
 
-    <#
-    #
-    # Example tables (embedded like original template)
-    #
-    $RegistryAddModify = @(
-        @{
-            Key    = 'HKLM\SOFTWARE\MyCompany'
-            Values = @(
-                @('SettingA'),
-                @('SettingB','X')
-            )
-        },
-        @{
-            Key    = 'HKCU\Software\MyCompany'
-            Values = @(
-                @()                     # export entire key (dominates)
-            )
-        }
-    )
-
-    $RegistryRemove = @(
-        @{
-            Key    = 'HKLM\SOFTWARE\MyCompany'
-            Values = @(
-                @('OldValue')
-            )
-        },
-        @{
-            Key    = 'HKCU\Software\MyCompany'
-            Values = @(
-                @()                     # delete entire key (dominates)
-            )
-        }
-    )
-    #>
-
+    # Empty Values'@()' means work on the entire key
     $RegistryAddModify = @(
         @{
             Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
@@ -2564,7 +2512,6 @@ function Invoke-PrepDestISO {
     $finalInstall = Join-Path $paths.WimsFinal $names.InstallWim
     $finalBoot    = Join-Path $paths.WimsFinal $names.BootWim
 
-
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
         Write-Warning "extract.json not found. Run -Extract first."
@@ -2680,11 +2627,10 @@ function Invoke-CreateISOWork {
         return
     }
     Write-Output "Starting CreateISO workflow..."
-
     Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
     $prepJson = Join-Path $paths.DestIsoRoot "prep.json"
 
-    # Depend on prep.json — fail if DestISO content has not been prepared
+    # Depends on prep.json — fail if DestISO content has not been prepared
     $prepMeta = Read-JsonFile -Path $prepJson
     if (-not $prepMeta) {
         Write-Warning "prep.json not found at '$prepJson'. Run -Prep first to prepare the destination ISO content."
@@ -2700,9 +2646,9 @@ function Invoke-CreateISOWork {
         return
     }
 
+    # Sanity check for boot files before invoking oscdimg
     $etfs = $paths.BIOSInDest
     $efis = $paths.UEFIInDest
-    # Sanity check for boot files before invoking oscdimg
     if (-not (Test-Path $etfs)) {
         Write-Warning "Missing BIOS boot file: $etfs"
         return
@@ -2727,7 +2673,6 @@ function Invoke-CreateISOWork {
     )
 
     Write-Output "Building ISO: $DestISO"
-    Write-Verbose "Source: $($paths.DestIsoContent)"
     Run-App $oscdimgExe $oscdimgArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Output "ERROR: oscdimg failed to build ISO (exit $LASTEXITCODE)"
@@ -2852,11 +2797,20 @@ if (-not $DryRun -and -not $Clean) {
     $isoMetaResolved = $false
     $metaSrc         = $null
 
+    # Helper: apply Get-WimMetadata result to the script-scope variables
+    function Apply-WimMetadata {
+        param([object]$Meta)
+        $script:allImages = $Meta.Images
+        if (-not $script:WinOS)   { $script:WinOS   = $Meta.WinOS }
+        if (-not $script:Version) { $script:Version = $Meta.Version }
+        if (-not $script:Arch)    { $script:Arch    = $Meta.Arch }
+    }
+
     # 1) Prefer cached wim-metadata.json if it matches the current ISO
     $metadataJson = Join-Path $paths.WimsIndices "wim-metadata.json"
     $wimMeta      = Read-JsonFile -Path $metadataJson
     if ($wimMeta -and ($wimMeta.ISOPath -eq $ISO -or -not $ISO)) {
-        Write-Verbose "Loading index list from wim-metadata.json"
+        Write-Verbose "Loading metadata from wim-metadata.json"
         $allImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
         if (-not $WinOS)   { $WinOS   = $wimMeta.WinOS }
         if (-not $Version) { $Version = $wimMeta.Version }
@@ -2872,14 +2826,8 @@ if (-not $DryRun -and -not $Clean) {
         if ($existingWim) {
             Write-Verbose "Reading metadata from SrcIsoContent: $existingWim"
             try {
-                $allImages = @(Get-WimImageList -WimPath $existingWim)
-                if (-not $WinOS -or -not $Version -or -not $Arch) {
-                    $meta = Get-ISOMetadataFromWim -WimPath $existingWim
-                    if (-not $WinOS)   { $WinOS   = $meta.WinOS }
-                    if (-not $Version) { $Version = $meta.Version }
-                    if (-not $Arch)    { $Arch    = $meta.Arch }
-                }
-                $isoMetaResolved = $true; $metaSrc = "SrcIsoContent"
+                Apply-WimMetadata (Get-WimMetadata -WimPath $existingWim)
+                if ($allImages.Count -gt 0) { $isoMetaResolved = $true; $metaSrc = "SrcIsoContent" }
             } catch { Write-Warning "Could not read metadata from SrcIsoContent: $_" }
         }
     }
@@ -2898,14 +2846,8 @@ if (-not $DryRun -and -not $Clean) {
                              } else { $null }
                 if ($metaWim) {
                     Write-Verbose "Reading metadata from mounted ISO"
-                    $allImages = @(Get-WimImageList -WimPath $metaWim)
-                    if (-not $WinOS -or -not $Version -or -not $Arch) {
-                        $meta = Get-ISOMetadataFromWim -WimPath $metaWim
-                        if (-not $WinOS)   { $WinOS   = $meta.WinOS }
-                        if (-not $Version) { $Version = $meta.Version }
-                        if (-not $Arch)    { $Arch    = $meta.Arch }
-                    }
-                    $isoMetaResolved = $true; $metaSrc = "mounted ISO"
+                    Apply-WimMetadata (Get-WimMetadata -WimPath $metaWim)
+                    if ($allImages.Count -gt 0) { $isoMetaResolved = $true; $metaSrc = "mounted ISO" }
                 }
             } finally { Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null }
         }
