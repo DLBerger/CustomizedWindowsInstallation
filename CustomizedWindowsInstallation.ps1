@@ -3157,6 +3157,9 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
         }
 
         # --- Load the DLL (PS 5.x safe) ---
+        # Load via byte array instead of file path so .NET does not hold a
+        # file lock on the DLL — this allows -Clean to delete or overwrite it
+        # even in the same PowerShell session.
         $hapLoaded = $false
         try {
             [void][HtmlAgilityPack.HtmlDocument]
@@ -3164,9 +3167,10 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
         } catch {}
 
         if (-not $hapLoaded) {
-            Write-Verbose "Loading HtmlAgilityPack from: $hapDll"
-            Add-Type -Path $hapDll
-            Write-Debug "HtmlAgilityPack successfully loaded"
+            Write-Verbose "Loading HtmlAgilityPack from bytes: $hapDll"
+            $hapBytes = [System.IO.File]::ReadAllBytes($hapDll)
+            [void][System.Reflection.Assembly]::Load($hapBytes)
+            Write-Debug "HtmlAgilityPack loaded from byte array (file lock avoided)"
         }
     }
 }
