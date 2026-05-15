@@ -548,8 +548,13 @@ function Get-WimMetadata {
 
     Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
 
+    # These are read-only queries — use & directly so the output is a clean
+    # array of strings.  Run-App also writes each line via Write-Output, which
+    # means assigning its return value captures every line twice (once from
+    # Write-Output and once from the returned array), breaking the parser below.
+
     # --- Call 1: enumerate all images ---
-    $listOutput = Run-App $dismExe @('/Get-WimInfo', "/WimFile:$WimPath")
+    $listOutput = & $dismExe /Get-WimInfo "/WimFile:$WimPath" 2>&1
     $images     = [System.Collections.Generic.List[object]]::new()
 
     if ($LASTEXITCODE -eq 0) {
@@ -576,9 +581,9 @@ function Get-WimMetadata {
     }
 
     # --- Call 2: OS details from index 1 ---
-    $buildNumber = 0
-    $archStr     = 'x64'
-    $detailOutput = Run-App $dismExe @('/Get-WimInfo', "/WimFile:$WimPath", '/Index:1')
+    $buildNumber  = 0
+    $archStr      = 'x64'
+    $detailOutput = & $dismExe /Get-WimInfo "/WimFile:$WimPath" /Index:1 2>&1
     foreach ($line in $detailOutput) {
         if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)\.') { $buildNumber = [int]$Matches[1] }
         if ($line -match '^\s*Architecture\s*:\s*(.+)')         { $archStr     = $Matches[1].Trim() }
