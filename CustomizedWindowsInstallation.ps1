@@ -452,7 +452,11 @@ function Run-App {
     $rc = $proc.ExitCode
     Write-Debug "$($psi.FileName) $($psi.Arguments) exited with code $rc"
     $global:LASTEXITCODE = $rc
-    return ,$allOutput
+    # Do NOT return $allOutput here.  Run-App already streams every line via
+    # Write-Output as it arrives.  Returning the array a second time causes
+    # PowerShell to replay all output through the caller's pipeline, making
+    # every line appear twice and corrupting the caller's output stream.
+    # Callers that need the exit status check $LASTEXITCODE directly.
 }
 
 # ==============================
