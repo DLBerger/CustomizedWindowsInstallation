@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "3ad0c56"
+$GitHash = "089bc47"
 
 # ==============================
 # Core names
@@ -1908,7 +1908,7 @@ function Invoke-DriverWork {
 # ==============================
 function Invoke-RegWork {
 
-    # Empty Values'@()' means work on the entire key
+    # Empty Values '@()' means work on the entire key
     $RegistryAddModify = @(
         @{
             Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
