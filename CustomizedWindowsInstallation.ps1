@@ -3199,4 +3199,32 @@ try {
     Write-Output "ERROR: $_"
     Write-Output "       Run the script again once the issue is resolved; completed steps will be skipped."
     exit 1
+} finally {
+    # -----------------------------------------------------------------------
+    # Cleanup: release any resources that may have been left open if the
+    # script was interrupted (Ctrl+C, early fatal error, etc.)
+    # -----------------------------------------------------------------------
+
+    # 1. Dismount the source ISO if it is still attached as a virtual drive.
+    if ($ISO -and (Test-Path $ISO)) {
+        try {
+            $img = Get-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue
+            if ($img -and $img.Attached) {
+                Write-Output "Cleanup: dismounting ISO..."
+                Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
+            }
+        } catch {}
+    }
+
+    # 2. Discard any DISM-mounted WIM images that the servicing loop left open.
+    #    Each active mount shows up as a non-empty subdirectory under WimsMounts.
+    if ($dismExe -and $paths -and $paths.WimsMounts -and (Test-Path $paths.WimsMounts)) {
+        $leftoverDirs = @(Get-ChildItem -Path $paths.WimsMounts -Directory -ErrorAction SilentlyContinue |
+                          Where-Object { (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -gt 0 })
+        foreach ($mountDir in $leftoverDirs) {
+            Write-Output "Cleanup: discarding leftover DISM mount at $($mountDir.FullName)..."
+            Run-App $dismExe @('/Unmount-Image', "/MountDir:$($mountDir.FullName)", '/Discard') | Out-Null
+            Remove-Item $mountDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
