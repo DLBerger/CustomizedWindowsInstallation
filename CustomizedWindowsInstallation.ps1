@@ -358,6 +358,8 @@ function Run-App {
     $seenLines       = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     # Track progress intervals to keep logs clean
     $lastLoggedValue = -1
+    # Suppress the blank line that immediately follows a suppressed progress line
+    $suppressNextBlank = $false
 
     while (-not $proc.HasExited -or -not $stdout.EndOfStream -or -not $stderr.EndOfStream) {
         while (-not $stdout.EndOfStream) {
@@ -367,10 +369,15 @@ function Run-App {
 
             # If it's a valid, intentional blank line printed by the app, let it pass through safely
             if ([string]::IsNullOrWhiteSpace($line)) {
+                if ($suppressNextBlank) {
+                    $suppressNextBlank = $false
+                    continue
+                }
                 Write-Output ""
                 $allOutput += ""
                 continue
             }
+            $suppressNextBlank = $false
 
             $isProgressLine = $false
             $logLine = $line
@@ -423,6 +430,9 @@ function Run-App {
                 $seenLines.Add($logLine) | Out-Null
                 Write-Output $logLine
                 $allOutput += $logLine
+            } else {
+                # Suppress the blank line that DISM/robocopy appends after each progress line
+                $suppressNextBlank = $true
             }
         }
 
@@ -893,7 +903,7 @@ function Invoke-Export {
 
         # -- Export install image --
         $installDest = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.InstallWim)
-        $installJson = "$installDest.json"
+        $installJson = $installDest + ".json"
         $existInstall = Read-JsonFile -Path $installJson
         $needInstall  = (-not $existInstall) -or ([datetime]::Parse($existInstall.ExportDate) -le $extractDate)
 
@@ -913,7 +923,7 @@ function Invoke-Export {
 
         # -- Export boot image --
         $bootDest = Join-Path $paths.WimsIndices ("{0}_{1}" -f $idx, $names.BootWim)
-        $bootJson = "$bootDest.json"
+        $bootJson = $bootDest + ".json"
         $existBoot = Read-JsonFile -Path $bootJson
         $needBoot  = (-not $existBoot) -or ([datetime]::Parse($existBoot.ExportDate) -le $extractDate)
 
