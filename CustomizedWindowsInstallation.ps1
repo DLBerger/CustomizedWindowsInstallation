@@ -264,6 +264,18 @@ if ($PSBoundParameters.ContainsKey('Debug')) {
 $ProgressPreference = 'SilentlyContinue'
 Write-Debug "ProgressPreference set to 'SilentlyContinue'"
 
+# Script-level registry of active child processes and cancellation flag.
+# The orchestration finally block uses these to kill stray processes on Ctrl+C.
+$script:ChildProcs = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+$script:Cancelled  = $false
+
+# Trap Ctrl+C: set the flag so the Run-App poll loop can terminate cleanly
+$null = [Console]::TreatControlCAsInput  # ensure we can see Ctrl+C
+trap [System.Management.Automation.PipelineStoppedException] {
+    $script:Cancelled = $true
+    break
+}
+
 # ==============================
 # Helper functions
 # ==============================
@@ -345,12 +357,10 @@ function Run-App {
     $psi.CreateNoWindow = $true
     Write-Verbose "$($psi.FileName) $($psi.Arguments)"
 
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $script:ChildProcs.Add($proc) | Out-Null
+
     $allOutput = @()
-
-    $proc.Start() | Out-Null
-
     $stdout = $proc.StandardOutput
     $stderr = $proc.StandardError
 
@@ -361,7 +371,13 @@ function Run-App {
     # Suppress the blank line that immediately follows a suppressed progress line
     $suppressNextBlank = $false
 
+    try {
     while (-not $proc.HasExited -or -not $stdout.EndOfStream -or -not $stderr.EndOfStream) {
+        # Honour Ctrl+C: kill the child and bubble up
+        if ($script:Cancelled) {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+            throw [System.OperationCanceledException]::new("Cancelled by user (Ctrl+C).")
+        }
         while (-not $stdout.EndOfStream) {
             $line = $stdout.ReadLine()
             # ONLY skip if the stream is literally sending nothing because it's idling
@@ -448,11 +464,23 @@ function Run-App {
         }
         Start-Sleep -Milliseconds 50
     }
-    $proc.WaitForExit()
-    $rc = $proc.ExitCode
+    } catch {
+        # Ensure the child is dead before propagating (e.g. cancellation)
+        try { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } } catch {}
+        throw
+    } finally {
+        $script:ChildProcs.Remove($proc) | Out-Null
+    }
+
+    try { $proc.WaitForExit() }     catch {}
+    try { $rc = [int]$proc.ExitCode } catch { $rc = 0 }
     Write-Debug "$($psi.FileName) $($psi.Arguments) exited with code $rc"
     $global:LASTEXITCODE = $rc
-    return ,$allOutput
+    # Do NOT return $allOutput here.  Run-App already streams every line via
+    # Write-Output as it arrives.  Returning the array a second time causes
+    # PowerShell to replay all output through the caller's pipeline, making
+    # every line appear twice and corrupting the caller's output stream.
+    # Callers that need the exit status check $LASTEXITCODE directly.
 }
 
 # ==============================
@@ -3006,6 +3034,18 @@ try {
             }
         } catch {}
     }
+
+    # 1b. Kill any child processes that Run-App registered but did not finish
+    #     (e.g. if Ctrl+C fired between Add and Remove in the ChildProcs list).
+    foreach ($cp in @($script:ChildProcs)) {
+        try {
+            if (-not $cp.HasExited) {
+                Write-Output "Cleanup: killing child process $($cp.Id) ($($cp.ProcessName))..."
+                Stop-Process -Id $cp.Id -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+    $script:ChildProcs.Clear()
 
     # 2. Discard any DISM-mounted WIM images that the servicing loop left open.
     #    Each active mount shows up as a non-empty subdirectory under WimsMounts.
