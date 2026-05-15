@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "089bc47"
+$GitHash = "ed9d9f9"
 
 # ==============================
 # Core names
@@ -515,7 +515,7 @@ function Get-WimMetadata {
     Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
 
     # --- Call 1: enumerate all images ---
-    $listOutput = Run-App $dismExe $('/Get-WimInfo', "/WimFile:$WimPath")
+    $listOutput = Run-App $dismExe @('/Get-WimInfo', "/WimFile:$WimPath")
     $images     = [System.Collections.Generic.List[object]]::new()
 
     if ($LASTEXITCODE -eq 0) {
@@ -544,10 +544,10 @@ function Get-WimMetadata {
     # --- Call 2: OS details from index 1 ---
     $buildNumber = 0
     $archStr     = 'x64'
-    $detailOutput = & $dismExe /Get-WimInfo "/WimFile:$WimPath" /Index:1 2>&1
+    $detailOutput = Run-App $dismExe @('/Get-WimInfo', "/WimFile:$WimPath", '/Index:1')
     foreach ($line in $detailOutput) {
         if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)\.') { $buildNumber = [int]$Matches[1] }
-        if ($line -match '^\s*Architecture\s*:\s*(.+)')          { $archStr     = $Matches[1].Trim() }
+        if ($line -match '^\s*Architecture\s*:\s*(.+)')         { $archStr     = $Matches[1].Trim() }
     }
     Write-Debug "  build=$buildNumber arch='$archStr'"
 
@@ -667,9 +667,6 @@ function Invoke-ExtractISO {
     [CmdletBinding()]
     param()
 
-    Write-Verbose "Invoke-ExtractISO: ISO='$ISO' SrcIsoContent='$($paths.SrcIsoContent)'"
-    $extractJson = Join-Path $paths.SrcIsoRoot "extract.json"
-
     if ($DryRun) {
         Write-Output "[DryRun] Would mount ISO: $ISO"
         Write-Output "[DryRun] Would validate $($names.BootFileBIOS) in $ISO"
@@ -691,6 +688,7 @@ function Invoke-ExtractISO {
     }
 
     Write-Output "Starting ExtractISO workflow..."
+    Write-Verbose "Invoke-ExtractISO: ISO='$ISO' SrcIsoContent='$($paths.SrcIsoContent)'"
 
     if (-not $ISO -or -not (Test-Path $ISO)) {
         Write-Warning "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
@@ -698,6 +696,7 @@ function Invoke-ExtractISO {
     }
 
     # Checkpoint: skip if same ISO was already extracted; clean and re-extract if ISO changed
+    $extractJson  = Join-Path $paths.SrcIsoRoot "extract.json"
     $existingJson = Read-JsonFile -Path $extractJson
     if ($existingJson) {
         if ($existingJson.ISOPath -eq $ISO) {
@@ -1899,7 +1898,7 @@ function Invoke-DriverWork {
     Write-Debug "dism $driverArgs"
     $p = Start-Process -FilePath $dismExe -ArgumentList $driverArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$WinpeDriverRoot\dism.log"
     if ($p.ExitCode -ne 0) {
-        Write-Output "ERROR: DISM /export-driver failed (exit $($p.ExitCode)) — check $WinpeDriverRoot\dism.log"
+        Write-Output "ERROR: DISM /export-driver failed (exit $($p.ExitCode)), check $WinpeDriverRoot\dism.log"
     }
 }
 
@@ -1908,7 +1907,7 @@ function Invoke-DriverWork {
 # ==============================
 function Invoke-RegWork {
 
-    # Empty Values '@()' means work on the entire key
+    # An empty list in the Values means work on the entire key
     $RegistryAddModify = @(
         @{
             Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
