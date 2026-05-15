@@ -515,7 +515,7 @@ function Get-WimMetadata {
     Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
 
     # --- Call 1: enumerate all images ---
-    $listOutput = & $dismExe /Get-WimInfo "/WimFile:$WimPath" 2>&1
+    $listOutput = Run-App $dismExe $('/Get-WimInfo, "/WimFile:$WimPath")
     $images     = [System.Collections.Generic.List[object]]::new()
 
     if ($LASTEXITCODE -eq 0) {
@@ -564,7 +564,7 @@ function Get-WimMetadata {
         { $_ -ge 19043 } { '21H1'; break }
         { $_ -ge 19042 } { '20H2'; break }
         { $_ -ge 19041 } { '2004'; break }
-        default           { if ($detectedWinOS -eq '11') { '25H2' } else { '22H2' }; break }
+        default          { if ($detectedWinOS -eq '11') { '25H2' } else { '22H2' }; break }
     }
 
     $detectedArch = switch -Wildcard ($archStr.ToLower()) {
@@ -875,8 +875,8 @@ function Invoke-Export {
             Write-Output "    $($names.InstallWim) index $idx already exported ($($existInstall.ExportDate))"
         } else {
             Write-Output "    Exporting $($names.InstallWim) index $idx..."
-            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc",
-                "/SourceIndex:$idx", "/DestinationImageFile:$installDest", '/Compress:None')
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc", "/SourceIndex:$idx",
+                               "/DestinationImageFile:$installDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.InstallWim) index $idx (exit $LASTEXITCODE) — skipping this index"
                 continue
@@ -895,8 +895,8 @@ function Invoke-Export {
             Write-Output "    $($names.BootWim) index $idx already exported ($($existBoot.ExportDate))"
         } else {
             Write-Output "    Exporting $($names.BootWim) (src idx $bootSrcIdx) for index $idx..."
-            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc",
-                "/SourceIndex:$bootSrcIdx", "/DestinationImageFile:$bootDest", '/Compress:None')
+            Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc", "/SourceIndex:$bootSrcIdx",
+                               "/DestinationImageFile:$bootDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.BootWim) index $idx (exit $LASTEXITCODE) — skipping boot image for this index"
             } else {
@@ -1908,42 +1908,7 @@ function Invoke-DriverWork {
 # ==============================
 function Invoke-RegWork {
 
-    <#
-    #
-    # Example tables (embedded like original template)
-    #
-    $RegistryAddModify = @(
-        @{
-            Key    = 'HKLM\SOFTWARE\MyCompany'
-            Values = @(
-                @('SettingA'),
-                @('SettingB','X')
-            )
-        },
-        @{
-            Key    = 'HKCU\Software\MyCompany'
-            Values = @(
-                @()                     # export entire key (dominates)
-            )
-        }
-    )
-
-    $RegistryRemove = @(
-        @{
-            Key    = 'HKLM\SOFTWARE\MyCompany'
-            Values = @(
-                @('OldValue')
-            )
-        },
-        @{
-            Key    = 'HKCU\Software\MyCompany'
-            Values = @(
-                @()                     # delete entire key (dominates)
-            )
-        }
-    )
-    #>
-
+    # Empty Values'@()' means work on the entire key
     $RegistryAddModify = @(
         @{
             Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
@@ -2547,7 +2512,6 @@ function Invoke-PrepDestISO {
     $finalInstall = Join-Path $paths.WimsFinal $names.InstallWim
     $finalBoot    = Join-Path $paths.WimsFinal $names.BootWim
 
-
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
         Write-Warning "extract.json not found. Run -Extract first."
@@ -2663,11 +2627,10 @@ function Invoke-CreateISOWork {
         return
     }
     Write-Output "Starting CreateISO workflow..."
-
     Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
     $prepJson = Join-Path $paths.DestIsoRoot "prep.json"
 
-    # Depend on prep.json — fail if DestISO content has not been prepared
+    # Depends on prep.json — fail if DestISO content has not been prepared
     $prepMeta = Read-JsonFile -Path $prepJson
     if (-not $prepMeta) {
         Write-Warning "prep.json not found at '$prepJson'. Run -Prep first to prepare the destination ISO content."
@@ -2683,9 +2646,9 @@ function Invoke-CreateISOWork {
         return
     }
 
+    # Sanity check for boot files before invoking oscdimg
     $etfs = $paths.BIOSInDest
     $efis = $paths.UEFIInDest
-    # Sanity check for boot files before invoking oscdimg
     if (-not (Test-Path $etfs)) {
         Write-Warning "Missing BIOS boot file: $etfs"
         return
@@ -2710,7 +2673,6 @@ function Invoke-CreateISOWork {
     )
 
     Write-Output "Building ISO: $DestISO"
-    Write-Verbose "Source: $($paths.DestIsoContent)"
     Run-App $oscdimgExe $oscdimgArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Output "ERROR: oscdimg failed to build ISO (exit $LASTEXITCODE)"
