@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "8814312"
+$GitHash = "089b410"
 
 # ==============================
 # Core names
@@ -674,11 +674,6 @@ function Resolve-IndexSelection {
     Write-Verbose "Index selection resolved to $($result.Count) index/indices: $($result.Index -join ', ')"
     return $result
 }
-
-# ==============================
-# Hardlink tree copy
-# ==============================
-
 
 # =========================
 # Extract section
