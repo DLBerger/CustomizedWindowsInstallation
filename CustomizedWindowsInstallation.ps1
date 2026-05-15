@@ -426,7 +426,8 @@ function Resolve-DismExe {
 
     if ($ExplicitPath) {
         if (-not (Test-Path $ExplicitPath)) {
-            throw "Explicit dism path not found: $ExplicitPath"
+            Write-Warning "Explicit dism path not found: $ExplicitPath"
+            return $null
         }
         Write-Verbose "Using explicit dism: $ExplicitPath"
         return $ExplicitPath
@@ -454,7 +455,8 @@ function Resolve-DismExe {
             Write-Verbose "Using system dism (forced): $systemDism"
             return $systemDism
         }
-        throw "System dism.exe not found at: $systemDism"
+        Write-Warning "System dism.exe not found at: $systemDism"
+        return $null
     }
 
     if ($PreferADK -and $adkDism) {
@@ -472,7 +474,8 @@ function Resolve-DismExe {
         return $systemDism
     }
 
-    throw "dism.exe not found. Install Windows ADK or specify -dism."
+    Write-Warning "dism.exe not found. Install Windows ADK or specify -dism."
+    return $null
 }
 
 function Resolve-OscdimgExe {
@@ -487,7 +490,8 @@ function Resolve-OscdimgExe {
 
     if ($ExplicitPath) {
         if (-not (Test-Path $ExplicitPath)) {
-            throw "Explicit oscdimg path not found: $ExplicitPath"
+            Write-Warning "Explicit oscdimg path not found: $ExplicitPath"
+            return $null
         }
         Write-Verbose "Using explicit oscdimg: $ExplicitPath"
         return $ExplicitPath
@@ -813,7 +817,8 @@ function Invoke-ExtractISO {
     Write-Output "Starting ExtractISO workflow..."
 
     if (-not $ISO -or -not (Test-Path $ISO)) {
-        throw "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
+        Write-Warning "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
+        return
     }
 
     # Checkpoint: skip if same ISO was already extracted; clean and re-extract if ISO changed
@@ -857,7 +862,7 @@ function Invoke-ExtractISO {
             $missing += "$($paths.InstallWimInIso) or $($paths.InstallEsdInIso)"
         }
         if ($missing.Count -gt 0) {
-            throw "Source ISO validation failed. Missing: $($missing -join ', ')"
+            throw "Source ISO validation failed. Missing required file(s): $($missing -join ', ')"
         }
         Write-Output "Source ISO validation passed"
 
@@ -874,8 +879,15 @@ function Invoke-ExtractISO {
         )
         Run-App 'robocopy.exe' $roboArgs
         # Robocopy exit codes 0-7 are all 'Success' variants
-        if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
+        if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 
+    } catch {
+        Write-Output "ERROR during ISO extraction: $_"
+        # Clean up the partial SrcIsoContent so a re-run starts fresh
+        if (Test-Path $paths.SrcIsoContent) {
+            Remove-Item $paths.SrcIsoContent -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return
     } finally {
         if (Get-DiskImage -ImagePath $ISO | Where-Object { $_.Attached }) {
             Write-Output "Unmounting ISO..."
@@ -917,7 +929,8 @@ function Invoke-Export {
 
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
-        throw "extract.json not found at '$extractJson'. Run -Extract first."
+        Write-Warning "extract.json not found at '$extractJson'. Run -Extract first."
+        return
     }
     $extractDate = [datetime]::Parse($extractMeta.Date)
 
@@ -927,9 +940,17 @@ function Invoke-Export {
     # Locate source WIMs
     $installSrc = if (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
                   elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
-                  else { throw "Install image not found in $($paths.SourcesInSrc). Run -Extract first." }
-    $bootSrc = if (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
-               else { throw "Boot image not found in $($paths.SourcesInSrc). Run -Extract first." }
+                  else { $null }
+    $bootSrc    = if (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc } else { $null }
+
+    if (-not $installSrc) {
+        Write-Warning "Install image not found in $($paths.SourcesInSrc). Run -Extract first."
+        return
+    }
+    if (-not $bootSrc) {
+        Write-Warning "Boot image not found in $($paths.SourcesInSrc). Run -Extract first."
+        return
+    }
 
     Write-Verbose "install source: $installSrc"
     Write-Verbose "boot source   : $bootSrc"
@@ -981,7 +1002,10 @@ function Invoke-Export {
             Write-Output "    Exporting $($names.InstallWim) index $idx..."
             Run-App $dismExe @('/Export-Image', "/SourceImageFile:$installSrc",
                 "/SourceIndex:$idx", "/DestinationImageFile:$installDest", '/Compress:None')
-            if ($LASTEXITCODE -ne 0) { throw "DISM export failed for install index $idx (exit $LASTEXITCODE)" }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "    DISM export failed for $($names.InstallWim) index $idx (exit $LASTEXITCODE) — skipping this index"
+                continue
+            }
             Write-JsonFile -Path $installJson -Data @{ Index = $idx; Name = $imgName; ExportDate = (Get-Date -Format s) }
             Write-Output "    $($names.InstallWim) index $idx exported"
         }
@@ -999,7 +1023,7 @@ function Invoke-Export {
             Run-App $dismExe @('/Export-Image', "/SourceImageFile:$bootSrc",
                 "/SourceIndex:$bootSrcIdx", "/DestinationImageFile:$bootDest", '/Compress:None')
             if ($LASTEXITCODE -ne 0) {
-                Write-Warning "    DISM boot export failed (exit $LASTEXITCODE); skipping"
+                Write-Warning "    DISM export failed for $($names.BootWim) index $idx (exit $LASTEXITCODE) — skipping boot image for this index"
             } else {
                 Write-JsonFile -Path $bootJson -Data @{ Index = $idx; SourceBootIndex = $bootSrcIdx; ExportDate = (Get-Date -Format s) }
                 Write-Output "    $($names.BootWim) index $idx exported"
@@ -1919,18 +1943,23 @@ function Invoke-ServiceWork {
         if ($sortedInstallWims.Count -eq 0) {
             Write-Warning "No $($names.InstallWim) files found to assemble"
         } else {
-            Write-Output "Creating final $($names.InstallWim)..."
-            $baseArgs = @('/Export-Image', "/DestinationImageFile:$finalInstallPath", '/SourceIndex:1', "/Compress:$dismCompression")
-            Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[0])"))
-            if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.InstallWim)) failed (exit $LASTEXITCODE)" }
-            for ($i = 1; $i -lt $sortedInstallWims.Count; $i++) {
-                Write-Output "  Appending $($names.InstallWim) index $($extractedIndices[$i])..."
-                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[$i])"))
-                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.InstallWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
+            try {
+                Write-Output "Creating final $($names.InstallWim)..."
+                $baseArgs = @('/Export-Image', "/DestinationImageFile:$finalInstallPath", '/SourceIndex:1', "/Compress:$dismCompression")
+                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[0])"))
+                if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.InstallWim)) failed (exit $LASTEXITCODE)" }
+                for ($i = 1; $i -lt $sortedInstallWims.Count; $i++) {
+                    Write-Output "  Appending $($names.InstallWim) index $($extractedIndices[$i])..."
+                    Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedInstallWims[$i])"))
+                    if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.InstallWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
+                }
+                $finalMeta['InstallWimDate'] = (Get-Date -Format s)
+                Write-JsonFile -Path $finalJson -Data $finalMeta
+                Write-Output "Final $($names.InstallWim) assembled"
+            } catch {
+                Write-Output "ERROR assembling final $($names.InstallWim): $_"
+                if (Test-Path $finalInstallPath) { Remove-Item $finalInstallPath -Force -ErrorAction SilentlyContinue }
             }
-            $finalMeta['InstallWimDate'] = (Get-Date -Format s)
-            Write-JsonFile -Path $finalJson -Data $finalMeta
-            Write-Output "Final $($names.InstallWim) assembled"
         }
     }
 
@@ -1945,21 +1974,26 @@ function Invoke-ServiceWork {
         if ($sortedBootWims.Count -eq 0) {
             Write-Warning "No $($names.BootWim) files found to assemble"
         } else {
-            Write-Output "Creating final $($names.BootWim)..."
-            $baseArgs = @('/Export-Image',
-                          "/DestinationImageFile:$finalBootPath",
-                          '/SourceIndex:1',
-                          "/Compress:$dismCompression")
-            Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[0])"))
-            if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.BootWim)) failed (exit $LASTEXITCODE)" }
-            for ($i = 1; $i -lt $sortedBootWims.Count; $i++) {
-                Write-Output "  Appending $($names.BootWim) index $($extractedIndices[$i])..."
-                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[$i])"))
-                if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.BootWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
+            try {
+                Write-Output "Creating final $($names.BootWim)..."
+                $baseArgs = @('/Export-Image',
+                              "/DestinationImageFile:$finalBootPath",
+                              '/SourceIndex:1',
+                              "/Compress:$dismCompression")
+                Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[0])"))
+                if ($LASTEXITCODE -ne 0) { throw "DISM export (first $($names.BootWim)) failed (exit $LASTEXITCODE)" }
+                for ($i = 1; $i -lt $sortedBootWims.Count; $i++) {
+                    Write-Output "  Appending $($names.BootWim) index $($extractedIndices[$i])..."
+                    Run-App $dismExe ($baseArgs + @("/SourceImageFile:$($sortedBootWims[$i])"))
+                    if ($LASTEXITCODE -ne 0) { throw "DISM append $($names.BootWim) index $($extractedIndices[$i]) failed (exit $LASTEXITCODE)" }
+                }
+                $finalMeta['BootWimDate'] = (Get-Date -Format s)
+                Write-JsonFile -Path $finalJson -Data $finalMeta
+                Write-Output "Final $($names.BootWim) assembled"
+            } catch {
+                Write-Output "ERROR assembling final $($names.BootWim): $_"
+                if (Test-Path $finalBootPath) { Remove-Item $finalBootPath -Force -ErrorAction SilentlyContinue }
             }
-            $finalMeta['BootWimDate'] = (Get-Date -Format s)
-            Write-JsonFile -Path $finalJson -Data $finalMeta
-            Write-Output "Final $($names.BootWim) assembled"
         }
     }
 
@@ -1993,7 +2027,9 @@ function Invoke-DriverWork {
     $driverArgs = "/online /export-driver /destination:`"$WinpeDriverRoot`""
     Write-Debug "dism $driverArgs"
     $p = Start-Process -FilePath $dismExe -ArgumentList $driverArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$WinpeDriverRoot\dism.log"
-    if ($p.ExitCode -ne 0) { throw "DISM /export-driver failed (exit $($p.ExitCode))" }
+    if ($p.ExitCode -ne 0) {
+        Write-Output "ERROR: DISM /export-driver failed (exit $($p.ExitCode)) — check $WinpeDriverRoot\dism.log"
+    }
 }
 
 # ==============================
@@ -2642,7 +2678,10 @@ function Invoke-PrepDestISO {
 
 
     $extractMeta = Read-JsonFile -Path $extractJson
-    if (-not $extractMeta) { throw "extract.json not found. Run -Extract first." }
+    if (-not $extractMeta) {
+        Write-Warning "extract.json not found. Run -Extract first."
+        return
+    }
     $extractDate = [datetime]::Parse($extractMeta.Date)
 
     $finalMeta = Read-JsonFile -Path $finalJson
@@ -2757,17 +2796,33 @@ function Invoke-CreateISOWork {
     Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
     $prepJson = Join-Path $paths.DestIsoRoot "prep.json"
 
-    # Depend on prep.json fail if DestISO content has not been prepared
+    # Depend on prep.json — fail if DestISO content has not been prepared
     $prepMeta = Read-JsonFile -Path $prepJson
     if (-not $prepMeta) {
-        throw "prep.json not found at '$prepJson'. Run -Prep to prepare the destination ISO content first."
+        Write-Warning "prep.json not found at '$prepJson'. Run -Prep first to prepare the destination ISO content."
+        return
+    }
+
+    if (-not $oscdimgExe) {
+        Write-Warning "oscdimg.exe not found. Install Windows ADK or specify -oscdimg."
+        return
+    }
+    if (-not $DestISO) {
+        Write-Warning "DestISO path is not set. Specify -DestISO or ensure -ISO is provided."
+        return
     }
 
     $etfs = $paths.BIOSInDest
     $efis = $paths.UEFIInDest
     # Sanity check for boot files before invoking oscdimg
-    if (-not (Test-Path $etfs)) { throw "Missing BIOS boot file: $etfs" }
-    if (-not (Test-Path $efis)) { throw "Missing UEFI boot file: $efis" }
+    if (-not (Test-Path $etfs)) {
+        Write-Warning "Missing BIOS boot file: $etfs"
+        return
+    }
+    if (-not (Test-Path $efis)) {
+        Write-Warning "Missing UEFI boot file: $efis"
+        return
+    }
 
     $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
@@ -2787,7 +2842,8 @@ function Invoke-CreateISOWork {
     Write-Verbose "Source: $($paths.DestIsoContent)"
     Run-App $oscdimgExe $oscdimgArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "oscdimg failed to build ISO $DestISO (exit $LASTEXITCODE)"
+        Write-Output "ERROR: oscdimg failed to build ISO (exit $LASTEXITCODE)"
+        return
     }
     Write-Output "Created ISO: $DestISO"
 }
@@ -2809,11 +2865,17 @@ Write-Verbose "Resolved working folder: $Folder"
 Write-Verbose "Resolving tool paths..."
 $dismExe    = Resolve-DismExe    -ExplicitPath $dism    -PreferADK:$UseADK -ForceSystem:$UseSystem
 $oscdimgExe = Resolve-OscdimgExe -ExplicitPath $oscdimg -PreferADK:$UseADK -ForceSystem:$UseSystem
+
+if (-not $dismExe) {
+    Write-Output "ERROR: dism.exe is required but was not found."
+    Write-Output "       Install the Windows ADK or use -dism to specify its path."
+    exit 1
+}
 Write-Output "dism    : $dismExe"
 if ($oscdimgExe) {
     Write-Output "oscdimg : $oscdimgExe"
 } else {
-    Write-Output "oscdimg : not found (ISO creation unavailable)"
+    Write-Output "oscdimg : not found (ISO creation unavailable; -CreateISO will fail)"
 }
 
 # ==============================
@@ -3082,7 +3144,8 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 
             $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
             if (-not $sourceDll) {
-                throw "$HtmlAgilityPackDll not found inside NuGet package"
+                Write-Output "ERROR: $HtmlAgilityPackDll not found inside the downloaded NuGet package. KB downloads will not work."
+                return
             }
 
             Copy-Item -Path $sourceDll -Destination $hapDll -Force
@@ -3113,20 +3176,27 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 # Main orchestration
 # ==============================
 
-if ($Extract)   { Invoke-ExtractISO }
-if ($Export)    { Invoke-Export }
-if ($KB)        { Invoke-KBWork }
-if ($Service)   { Invoke-ServiceWork }
-if ($Drivers)   { Invoke-DriverWork }
-if ($Reg)       { Invoke-RegWork }
-if ($Files) {
-    Write-InstallDriversCmd
-    Write-InstallRegsCmd
-    Write-PostSetupCmd
-    Write-SetupConfigFiles
-    Write-SetupCmdFiles
-}
-if ($Prep)      { Invoke-PrepDestISO }
-if ($CreateISO) { Invoke-CreateISOWork }
+try {
+    if ($Extract)   { Invoke-ExtractISO }
+    if ($Export)    { Invoke-Export }
+    if ($KB)        { Invoke-KBWork }
+    if ($Service)   { Invoke-ServiceWork }
+    if ($Drivers)   { Invoke-DriverWork }
+    if ($Reg)       { Invoke-RegWork }
+    if ($Files) {
+        Write-InstallDriversCmd
+        Write-InstallRegsCmd
+        Write-PostSetupCmd
+        Write-SetupConfigFiles
+        Write-SetupCmdFiles
+    }
+    if ($Prep)      { Invoke-PrepDestISO }
+    if ($CreateISO) { Invoke-CreateISOWork }
 
-Write-Output "Completed"
+    Write-Output "Completed"
+} catch {
+    Write-Output ""
+    Write-Output "ERROR: $_"
+    Write-Output "       Run the script again once the issue is resolved; completed steps will be skipped."
+    exit 1
+}
