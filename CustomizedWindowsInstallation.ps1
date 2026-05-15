@@ -379,7 +379,7 @@ function Run-App {
             # DISM Engine
             # ----------------------------------------------------
             if ($Exe -match 'dism\.exe$') {
-                if ($line -match '\[=+?\s+(\d+(?:\.\d+)?)%\s+=+?\]') {
+                if ($line -match '^\[[\s=]*(\d+(?:\.\d+)?)%[\s=]*\]\s*$') {
                     $isProgressLine = $true
                     $percent = [math]::Round([double]$Matches[1])
                     if ($percent % 10 -eq 0 -and $percent -ne $lastLoggedValue) {
