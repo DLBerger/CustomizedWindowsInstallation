@@ -204,7 +204,7 @@ param(
 )
 
 # git hash
-$GitHash = "3b38bac"
+$GitHash = "0cdbd2f"
 
 # ==============================
 # Core names
@@ -957,7 +957,7 @@ Write-Debug "    installDest='$installDest' installJson='$installJson' existInst
                 Write-Warning "    DISM export failed for $($names.InstallWim) index $idx (exit $LASTEXITCODE) — skipping this index"
                 continue
             }
-Write-Debug "    DISM export completed for index $idx, writing metadata JSON..."
+Write-Debug "    DISM export completed for install index $idx - $imgName, writing metadata JSON to $installJson..."
             Write-JsonFile -Path $installJson -Data @{ Index = $idx; Name = $imgName; ExportDate = (Get-Date -Format s) }
             Write-Output "    $($names.InstallWim) index $idx exported"
         }
@@ -978,7 +978,7 @@ Write-Debug "    bootDest='$bootDest' bootJson='$bootJson' existBoot='$existBoot
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "    DISM export failed for $($names.BootWim) index $idx (exit $LASTEXITCODE) — skipping boot image for this index"
             } else {
-Write-Debug "    DISM export completed for index $idx, writing metadata JSON..."
+Write-Debug "    DISM export completed for boot index $idx - $imgName, writing metadata JSON to $bootJson..."
                 Write-JsonFile -Path $bootJson -Data @{ Index = $idx; SourceBootIndex = $bootSrcIdx; ExportDate = (Get-Date -Format s) }
                 Write-Output "    $($names.BootWim) index $idx exported"
             }
