@@ -270,11 +270,12 @@ $script:ChildProcs = [System.Collections.Generic.List[System.Diagnostics.Process
 $script:Cancelled  = $false
 
 # Trap Ctrl+C: set the flag so the Run-App poll loop can terminate cleanly
-$null = [Console]::TreatControlCAsInput  # ensure we can see Ctrl+C
-trap [System.Management.Automation.PipelineStoppedException] {
-    $script:Cancelled = $true
-    break
-}
+# $script:Cancelled is checked by Run-App on each poll iteration.
+# Set it to $true from outside (e.g. a Ctrl+C handler) to stop child processes gracefully.
+# Note: a script-level 'trap' for PipelineStoppedException is NOT used here because
+# PowerShell raises PipelineStoppedException internally to shut down 'Out-Null' and
+# other pipeline operations; catching it with 'break' at script scope causes
+# unexpected jumps in execution flow.
 
 # ==============================
 # Helper functions
