@@ -337,7 +337,13 @@ function Write-JsonFile {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][object]$Data
     )
-    Ensure-Folder -Path (Split-Path $Path -Parent)
+    if ([string]::IsNullOrEmpty($Path)) {
+        throw "Write-JsonFile called with an empty Path (caller: $(Get-PSCallStack | Select-Object -Skip 1 -First 1 | ForEach-Object { "$($_.Command) line $($_.ScriptLineNumber)" }))"
+    }
+    $parent = Split-Path $Path -Parent
+    if (-not [string]::IsNullOrEmpty($parent)) {
+        Ensure-Folder -Path $parent
+    }
     $Data | ConvertTo-Json -Depth 6 | Set-Content -Path $Path -Encoding UTF8
 }
 
@@ -360,7 +366,6 @@ function Run-App {
     $proc = [System.Diagnostics.Process]::Start($psi)
     $script:ChildProcs.Add($proc) | Out-Null
 
-    $allOutput = @()
     $stdout = $proc.StandardOutput
     $stderr = $proc.StandardError
 
@@ -390,7 +395,6 @@ function Run-App {
                     continue
                 }
                 Write-Output ""
-                $allOutput += ""
                 continue
             }
             $suppressNextBlank = $false
@@ -403,6 +407,9 @@ function Run-App {
             # ----------------------------------------------------
             if ($Exe -match 'dism\.exe$') {
                 if ($line -match '^\[[\s=]*(\d+(?:\.\d+)?)%[\s=]*\]\s*$') {
+                    # Always suppress the blank line DISM appends after every
+                    # progress bar line, whether it is a milestone or not.
+                    $suppressNextBlank = $true
                     $isProgressLine = $true
                     $percent = [math]::Round([double]$Matches[1])
                     if ($percent % 10 -eq 0 -and $percent -ne $lastLoggedValue) {
@@ -441,11 +448,10 @@ function Run-App {
                 }
             }
 
-            # Output and store the line if it isn't intermediate progress spam
+            # Output the line if it isn't intermediate progress spam
             if (-not $isProgressLine) {
                 $seenLines.Add($logLine) | Out-Null
                 Write-Output $logLine
-                $allOutput += $logLine
             } else {
                 # Suppress the blank line that DISM/robocopy appends after each progress line
                 $suppressNextBlank = $true
@@ -458,7 +464,6 @@ function Run-App {
                 # Only output stderr lines that were NOT already written from stdout
                 if ($seenLines.Add($line)) {
                     Write-Output $line
-                    $allOutput += $line
                 }
             }
         }
