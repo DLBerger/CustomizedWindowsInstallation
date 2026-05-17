@@ -196,7 +196,7 @@ param(
 )
 
 # git hash
-$GitHash = "5aa2f42"
+$GitHash = "c6a1e3b"
 
 # ==============================
 # Core names
@@ -447,20 +447,6 @@ function Run-App {
                 }
             }
             # ----------------------------------------------------
-            # Robocopy Engine
-            # ----------------------------------------------------
-            elseif ($Exe -match 'robocopy\.exe$') {
-                if ($line -match '(\d+(?:\.\d+)?)%') {
-                    $isProgressLine = $true
-                    $percent = [math]::Round([double]$Matches[1])
-                    if ($percent % 25 -eq 0 -and $percent -ne $lastLoggedValue) {
-                        $logLine = "   Progress: $percent%"
-                        $lastLoggedValue = $percent
-                        $isProgressLine = $false
-                    }
-                }
-            }
-            # ----------------------------------------------------
             # Oscdimg Engine
             # ----------------------------------------------------
             elseif ($Exe -match 'oscdimg\.exe$') {
@@ -480,7 +466,7 @@ function Run-App {
                 $seenLines.Add($logLine) | Out-Null
                 Write-Output $logLine
             } else {
-                # Suppress the blank line that DISM/robocopy appends after each progress line
+                # Suppress the blank line that DISM appends after each progress line
                 $suppressNextBlank = $true
             }
         }
@@ -834,7 +820,7 @@ function Invoke-ExtractISO {
         Write-Output "[DryRun] Would validate $($names.BootFileUEFI) in $ISO"
         Write-Output "[DryRun] Would validate $($paths.BootWimInIso) in $ISO"
         Write-Output "[DryRun] Would validate $($paths.InstallWimInIso) or $($paths.InstallEsdInIso) in $ISO"
-        Write-Output "[DryRun] Would robocopy tree -> $($paths.SrcIsoRoot)"
+        Write-Output "[DryRun] Would copy tree -> $($paths.SrcIsoRoot)"
         Write-Output "[DryRun] Would hardlink-copy $($paths.SrcIsoRoot) -> $($paths.DestIsoRoot) (excluding $($names.BootWim), $($names.InstallWim), $($names.InstallEsd))"
         Write-Output "[DryRun] Would export $($SelectedIndices.Count) indices to $($paths.WimsIndices)"
         return
@@ -894,20 +880,105 @@ function Invoke-ExtractISO {
         Write-Output "Source ISO validation passed"
 
         # Copy the ISO tree to SrcIsoContent
-        Write-Output "Copying ISO tree -> $($paths.SrcIsoContent)..."
-        $roboArgs = @(
-            $driveLetterRaw,
-            $paths.SrcIsoContent,
-            '/E',    # copy subdirectories, including Empty ones
-            '/R:2',  # retry twice
-            '/W:1',  # wait 1 second between retries
-            '/NC',   # No Class - don't show file classes (e.g., "New File", "Same File"), just show the file names
-            '/TEE'   # output to console and log file
-        )
-        Run-App 'robocopy.exe' $roboArgs
-        # Robocopy exit codes 0-7 are all 'Success' variants
-        if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
 
+        # Standardize paths to ensure safe string replacement for relative paths
+        $sourceBase = $driveLetterRaw.TrimEnd('\') + '\'
+        $destBase   = $paths.SrcIsoContent
+
+        Write-Output "Copying ISO tree -> $destBase..."
+
+        # Pre-gather items and calculate total payload size using 64-bit integers
+        $allItems = Get-ChildItem -Path $sourceBase -Recurse
+        $totalBytes = [int64]0
+        foreach ($item in $allItems) {
+            if (-not $item.PSIsContainer) { $totalBytes += $item.Length }
+        }
+        if ($totalBytes -eq 0) { $totalBytes = 1 } # Avoid divide-by-zero on empty sources
+
+        $copiedBytes = [int64]0
+        $lastReportedPercent = -1
+        $bufferSize = 4194304 # 4MB chunk buffers for optimal performance
+
+        foreach ($item in $allItems) {
+            # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
+            $relativePath = $item.FullName.Substring($sourceBase.Length)
+            $targetPath   = Join-Path -Path $destBase -ChildPath $relativePath
+
+            if ($item.PSIsContainer) {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "Folder: $relativePath"
+                if (-not (Test-Path -Path $targetPath)) {
+                    $null = New-Item -Path $targetPath -ItemType Directory -Force
+                }
+            } else {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "File:   $relativePath"
+                
+                # Mimic Robocopy /R:2 /W:1 (1 initial attempt + 2 retries, 1 sec wait)
+                $retries = 2
+                $success = $false
+                
+                while (-not $success) {
+                    $sourceStream = $null
+                    $destStream   = $null
+                    $bytesWrittenThisAttempt = [int64]0
+                    $aborted = $true # Default to true; proven false only on complete file success
+                    
+                    try {
+                        # Ensure parent directory exists before streaming
+                        $parentDir = Split-Path -Path $targetPath -Parent
+                        if (-not (Test-Path -Path $parentDir)) {
+                            $null = New-Item -Path $parentDir -ItemType Directory -Force
+                        }
+
+                        # Open low-level .NET file streams
+                        $sourceStream = [System.IO.File]::OpenRead($item.FullName)
+                        $destStream   = [System.IO.File]::Create($targetPath)
+                        $buffer       = New-Object Byte[] $bufferSize
+
+                        # Read and write in 4MB blocks
+                        while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                            $destStream.Write($buffer, 0, $bytesRead)
+                            
+                            $bytesWrittenThisAttempt += $bytesRead
+                            $copiedBytes             += $bytesRead
+
+                            # Calculate progress dynamically mid-file execution
+                            $currentPercent = [math]::Floor(($copiedBytes / $totalBytes) * 100)
+                            $percentBucket  = [math]::Floor($currentPercent / 10) * 10
+                            
+                            if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
+                                # Outputs to Stream 1 (Success). Captured directly by tee
+                                Write-Output "Copy progress: $percentBucket%"
+                                $lastReportedPercent = $percentBucket
+                            }
+                        }
+
+                        $aborted = $false # Entire file copied without interruption
+                        $success = $true
+                    } catch {
+                        # Rollback global counter for what we wrote during this failed attempt
+                        $copiedBytes -= $bytesWrittenThisAttempt
+
+                        if ($retries -gt 0) {
+                            Start-Sleep -Seconds 1
+                            $retries--
+                        } else {
+                            throw "Native stream copy failed for '$($item.FullName)' to '$targetPath' after retries: $_"
+                        }
+                    } finally {
+                        # CRITICAL: This block executes even if the pipeline is halted via Ctrl+C
+                        if ($sourceStream) { $sourceStream.Close(); $sourceStream.Dispose() }
+                        if ($destStream)   { $destStream.Close(); $destStream.Dispose() }
+                        
+                        # If an error occurred or user issued Ctrl+C, delete the incomplete file
+                        if ($aborted -and (Test-Path -Path $targetPath)) {
+                            Remove-Item -Path $targetPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+            }
+        }
     } catch {
         Write-Output "ERROR during ISO extraction: $_"
         # Clean up the partial SrcIsoContent so a re-run starts fresh
