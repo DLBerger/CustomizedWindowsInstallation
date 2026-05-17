@@ -4,6 +4,9 @@ setlocal
 set "SRC=%~dp0"
 set "FLD=$WinpeDriver$"
 
-echo Import drivers
+:: Ensure the output folder exists and create if necessary
+if not exist "%SRC%%FLD%" mkdir "%SRC%%FLD%"
+
+echo Export drivers
 pnputil /export-driver * "%SRC%%FLD%"
 endlocal
