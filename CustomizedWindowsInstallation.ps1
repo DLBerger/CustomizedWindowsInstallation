@@ -10,14 +10,6 @@ It supports:
 - Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog.
 - Exporting all third-party drivers from the current system into $WinpeDriver$.
 - Exporting registry keys into .reg files.
-- Generating:
-    - InstallDrivers.cmd
-    - InstallRegs.cmd
-    - PostSetup.cmd
-    - SetupConfig-Clean.ini
-    - SetupConfig-Upgrade.ini
-    - Upgrade.cmd
-    - CleanInstall.cmd
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
 
@@ -61,7 +53,7 @@ Export drivers into $WinpeDriver$.
 Export registry keys.
 
 .PARAMETER Files
-Generate PostSetup.cmd, SetupConfig-*.ini, and additional .cmd files.
+Copy various .cmd, .ps1, and .ini files with transformations to customize them for the current folder structure and configuration.
 
 .PARAMETER Prep
 Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
@@ -204,7 +196,7 @@ param(
 )
 
 # git hash
-$GitHash = "0cdbd2f"
+$GitHash = "5aa2f42"
 
 # ==============================
 # Core names
@@ -224,9 +216,11 @@ $names = [ordered]@{
     WinreWim              = 'winre.wim'
     BootFileBIOS          = 'boot\etfsboot.com'
     BootFileUEFI          = 'efi\microsoft\boot\efisys.bin'
+    ExportDriversCmd      = 'ExportDrivers.cmd'
     InstallDriversCmd     = 'InstallDrivers.cmd'
+    ExportRegsCmd         = 'ExportRegs.cmd'
+    ExportRegsPs1         = 'ExportRegs.ps1'
     InstallRegsCmd        = 'InstallRegs.cmd'
-    PostSetupCmd          = 'PostSetup.cmd'
     SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
@@ -242,6 +236,38 @@ $wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final')
 foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
+
+# ==============================
+# RequiredFiles and RequiredTransforms
+# ==============================
+$names.RequiredFiles = @(
+    $names.InstallDriversCmd,
+    $names.InstallRegsCmd,
+    $names.ExportDriversCmd,
+    $names.ExportRegsCmd,
+    $names.ExportRegsPs1,
+    $names.SetupConfigCleanIni,
+    $names.SetupConfigUpgradeIni,
+    $names.CleanInstallCmd,
+    $names.UpgradeCmd
+)
+
+# Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
+# **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
+$names.RequiredTransforms = @(
+    @($names.ExportDriversCmd, @(
+        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+    )),
+    @($names.InstallDriversCmd, @(
+        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+    )),
+    @($names.ExportRegsPs1, @(
+        @('set "FLD=Registry"', $names.Registry)
+    )),
+    @($names.InstallRegsCmd, @(
+        @("$RegistryRoot = 'Registry'", $names.Registry)
+    ))
+)
 
 # Ensure elevated
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -487,6 +513,52 @@ function Run-App {
     # PowerShell to replay all output through the caller's pipeline, making
     # every line appear twice and corrupting the caller's output stream.
     # Callers that need the exit status check $LASTEXITCODE directly.
+}
+
+# ==============================
+# Report-Missing helper
+# ==============================
+function Report-Missing {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Required,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$AtLeastOne = @()
+    )
+
+    # Check Required files and build missing list
+    $missingFiles = @()
+    foreach ($file in $Required) {
+        if (-not (Test-Path $file)) {
+            $missingFiles += $file
+        }
+    }
+
+    # Report missing files
+    if ($missingFiles.Count -gt 0) {
+        Write-Output "Missing file(s): $($missingFiles -join ', ')"
+    }
+
+    # Check AtLeastOne requirement
+    if ($AtLeastOne.Count -gt 0) {
+        $foundAny = $false
+        foreach ($file in $AtLeastOne) {
+            if (Test-Path $file) {
+                $foundAny = $true
+                break
+            }
+        }
+
+        if (-not $foundAny) {
+            Write-Output "At least 1 required: $($AtLeastOne -join ', ')"
+            return $true
+        }
+    }
+
+    # Return $true if any required files were missing
+    return ($missingFiles.Count -gt 0)
 }
 
 # ==============================
@@ -809,16 +881,15 @@ function Invoke-ExtractISO {
         Write-Output "ISO mounted at: $driveLetter"
 
         # ---- Validate required files in ISO ----
-        $missing = @()
-        if (-not (Test-Path (Join-Path $driveLetter $names.BootFileBIOS))) { $missing += $names.BootFileBIOS }
-        if (-not (Test-Path (Join-Path $driveLetter $names.BootFileUEFI))) { $missing += $names.BootFileUEFI }
-        if (-not (Test-Path (Join-Path $driveLetter $paths.BootWimInIso))) { $missing += $paths.BootWimInIso }
-        if (-not ((Test-Path (Join-Path $driveLetter $paths.InstallWimInIso)) -or
-                  (Test-Path (Join-Path $driveLetter $paths.InstallEsdInIso)))) {
-            $missing += "$($paths.InstallWimInIso) or $($paths.InstallEsdInIso)"
-        }
-        if ($missing.Count -gt 0) {
-            throw "Source ISO validation failed. Missing required file(s): $($missing -join ', ')"
+        if (Report-Missing -Required @(
+            (Join-Path $driveLetter $names.BootFileBIOS),
+            (Join-Path $driveLetter $names.BootFileUEFI),
+            (Join-Path $driveLetter $paths.BootWimInIso)
+        ) -AtLeastOne @(
+            (Join-Path $driveLetter $paths.InstallWimInIso),
+            (Join-Path $driveLetter $paths.InstallEsdInIso)
+        )) {
+            throw "Source ISO validation failed. See above for missing file details."
         }
         Write-Output "Source ISO validation passed"
 
@@ -2299,68 +2370,6 @@ endlocal
 }
 
 # ==============================
-# PostSetup.cmd
-# ==============================
-function Write-PostSetupCmd {
-
-    $path = $paths.PostSetupCmd
-
-    $template = @'
-@echo off
-setlocal enabledelayedexpansion
-set "SRC=%~dp0"
-
-:: Apply KBs in the correct order
-
-{0}
-endlocal
-'@
-
-    $osTemplate = @'
-echo Installing updates from %SRC%\{0}\{1}
-
-:: Install EXE installers
-for %%F in ("%SRC%\{0}\{1}\*.exe") do (
-    echo Installing EXE %%F
-    "%%F" /quiet /norestart
-)
-
-:: Install MSI installers
-for %%F in ("%SRC%\{0}\{1}\*.msi") do (
-    echo Installing MSI %%F
-    msiexec.exe /i "%%F" /quiet /norestart
-)
-
-:: Run CMD/BAT scripts
-for %%F in ("%SRC%\{0}\{1}\*.cmd") do (
-    echo Running CMD %%F
-    call "%%F"
-)
-for %%F in ("%SRC%\{0}\{1}\*.bat") do (
-    echo Running BAT %%F
-    call "%%F"
-)
-
-'@
-
-    if ($Clean) {
-        Clean-File $path
-    } elseif ($DryRun) {
-        Write-Output "[DryRun] Would write: $path"
-    } else {
-        Write-Output "Writing: $path"
-        Ensure-Folder (Split-Path $path -Parent)
-
-        $osContent = ""
-        foreach ($u in $kbDirs) {
-            $osContent += $osTemplate -f $names.KBs, $names.$u
-        }
-        $content = $template -f $osContent, $names.Registry
-        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-    }
-}
-
-# ==============================
 # SetupConfig files
 # ==============================
 function Write-SetupConfigFiles {
@@ -2643,14 +2652,8 @@ function Invoke-CreateISOWork {
     }
 
     # Sanity check for boot files before invoking oscdimg
-    $etfs = $paths.BIOSInDest
-    $efis = $paths.UEFIInDest
-    if (-not (Test-Path $etfs)) {
-        Write-Warning "Missing BIOS boot file: $etfs"
-        return
-    }
-    if (-not (Test-Path $efis)) {
-        Write-Warning "Missing UEFI boot file: $efis"
+    if (Report-Missing -Required @($paths.BIOSInDest, $paths.UEFIInDest)) {
+        Write-Warning "Boot files are missing from the destination ISO content. Run -Prep first to prepare the destination ISO."
         return
     }
 
@@ -2733,7 +2736,6 @@ $paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $Folder $names.Registry
 $paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
 $paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
-$paths.PostSetupCmd          = Join-Path $Folder $names.PostSetupCmd
 $paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
 $paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
 $paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
@@ -3011,7 +3013,6 @@ try {
     if ($Files) {
         Write-InstallDriversCmd
         Write-InstallRegsCmd
-        Write-PostSetupCmd
         Write-SetupConfigFiles
         Write-SetupCmdFiles
     }
