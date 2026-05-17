@@ -159,9 +159,9 @@ function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
 if (-not $Folder) { $Folder = $RegistryRoot }
 
 # ==============================
-# Resolve working folder make sure it exists
+# Resolve working folder and make sure it exists
 # ==============================
-$Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
+$Folder = (Resolve-Path -LiteralPath $Folder -ErrorAction Stop).ProviderPath
 Write-Output "Resolved working folder: $Folder"
 if (-not (Test-Path $Folder)) { New-Item -ItemType Directory -Path $Folder -Force | Out-Null }
 
@@ -174,7 +174,7 @@ foreach ($entry in $RegistryAddModify) {
     $groups = $entry.Values
 
     $safe = "AddModify_" + (RegSafeName $key)
-    $dest = Join-Path $RegistryRoot $safe
+    $dest = Join-Path $Folder $safe
 
     # entire key if:
     # - Values is null/empty, OR
@@ -207,7 +207,7 @@ foreach ($entry in $RegistryRemove) {
     $groups = $entry.Values
 
     $safe = "Remove_" + (RegSafeName $key)
-    $dest = Join-Path $RegistryRoot $safe
+    $dest = Join-Path $Folder $safe
 
     $hasEntire = $false
     if (-not $groups -or $groups.Count -eq 0) {
