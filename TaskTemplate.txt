@@ -1,0 +1,182 @@
+BEGINNING OF FILE
+If you don't see a corresponding END OF FILE at the very end of this,
+then you don't have the complete task information, you shall fail
+immediately and report the failure.
+=====================================================================
+Prerequisites BEGIN
+# ==============================
+# Core names
+# ==============================
+$names = [ordered]@{
+    SrcIso                = 'SrcISO'
+    DestIso               = 'DestISO'
+    KBs                   = 'KBs'
+    Wims                  = 'Wims'
+    WinpeDriver           = '$WinpeDriver$'
+    Registry              = 'Registry'
+    Content               = 'Content'
+    Sources               = 'sources'
+    BootWim               = 'boot.wim'
+    InstallEsd            = 'install.esd'
+    InstallWim            = 'install.wim'
+    WinreWim              = 'winre.wim'
+    BootFileBIOS          = 'boot\etfsboot.com'
+    BootFileUEFI          = 'efi\microsoft\boot\efisys.bin'
+    ExportDriversCmd      = 'ExportDrivers.cmd'
+    InstallDriversCmd     = 'InstallDrivers.cmd'
+    ExportRegsCmd         = 'ExportRegs.cmd'
+    ExportRegsPs1         = 'ExportRegs.ps1'
+    InstallRegsCmd        = 'InstallRegs.cmd'
+    SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
+    SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
+    CleanInstallCmd       = 'CleanInstall.cmd'
+    UpgradeCmd            = 'Upgrade.cmd'
+}
+
+$kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
+foreach ($u in $kbDirs) {
+    $names[$u] = $u
+}
+
+$wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final', 'Scratch', 'Logs')
+foreach ($u in $wimDirs) {
+    $names[$u] = $u
+}
+
+# ==============================
+# RequiredFiles and RequiredTransforms
+# ==============================
+$names.RequiredFiles = @(
+    $names.InstallDriversCmd,
+    $names.InstallRegsCmd,
+    $names.ExportDriversCmd,
+    $names.ExportRegsCmd,
+    $names.ExportRegsPs1,
+    $names.SetupConfigCleanIni,
+    $names.SetupConfigUpgradeIni,
+    $names.CleanInstallCmd,
+    $names.UpgradeCmd
+)
+
+# Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
+# **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
+$names.RequiredTransforms = @(
+    @($names.ExportDriversCmd, @(
+        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+    )),
+    @($names.InstallDriversCmd, @(
+        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+    )),
+    @($names.ExportRegsPs1, @(
+        @('set "FLD=Registry"', $names.Registry)
+    )),
+    @($names.InstallRegsCmd, @(
+        @("$RegistryRoot = 'Registry'", $names.Registry)
+    ))
+)
+
+# ==============================
+# Core paths (requires $Folder)
+# ==============================
+$paths = [ordered]@{}
+$paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
+$paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
+$paths.InstallWimInIso       = Join-Path $names.Sources $names.InstallWim
+$paths.SrcIsoRoot            = Join-Path $Folder $names.SrcIso
+$paths.SrcIsoContent         = Join-Path $paths.SrcIsoRoot $names.Content
+$paths.BIOSInSrc             = Join-Path $paths.SrcIsoContent $names.BootFileBIOS
+$paths.UEFIInSrc             = Join-Path $paths.SrcIsoContent $names.BootFileUEFI
+$paths.SourcesInSrc          = Join-Path $paths.SrcIsoContent $names.Sources
+$paths.BootWimInSrc          = Join-Path $paths.SourcesInSrc $names.BootWim
+$paths.InstallEsdInSrc       = Join-Path $paths.SourcesInSrc $names.InstallEsd
+$paths.InstallWimInSrc       = Join-Path $paths.SourcesInSrc $names.InstallWim
+$paths.DestIsoRoot           = Join-Path $Folder $names.DestIso
+$paths.DestIsoContent        = Join-Path $paths.DestIsoRoot $names.Content
+$paths.BIOSInDest            = Join-Path $paths.DestIsoContent $names.BootFileBIOS
+$paths.UEFIInDest            = Join-Path $paths.DestIsoContent $names.BootFileUEFI
+$paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
+$paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
+$paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
+$paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
+$paths.RegistryRoot          = Join-Path $Folder $names.Registry
+$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
+$paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
+$paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
+$paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
+$paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
+$paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
+$paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
+$paths.KBsRoot               = Join-Path $Folder $names.KBs
+foreach ($u in $kbDirs) {
+    $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
+}
+$paths.WimsRoot              = Join-Path $Folder $names.Wims
+foreach ($u in $wimDirs) {
+    $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
+}
+$paths.InstallWimInFinal     = Join-Path $paths.WimsFinal $names.InstallWim
+$paths.BootWimInFinal        = Join-Path $paths.WimsFinal $names.BootWim
+Prerequisites END
+Sample Code 1 BEGIN
+Sample Code 1 END
+Sample Code 2 BEGIN
+Sample Code 2 END
+Task 1 BEGIN
+Task 1 END
+Task 2 BEGIN
+Task 2 END
+Task 3 BEGIN
+Task 3 END
+ABSOLUTE BEHAVIOR RULES
+NEVER summarize any script.
+NEVER describe what a script does.
+NEVER output prose unless explicitly asked.
+NEVER restate or paraphrase input files.
+NEVER generate usage notes, examples, or explanations unless explicitly requested.
+Output ONLY what the user or task file requests.
+CODE RULES
+PowerShell 5.x only. No PS5 syntax that will fail in PS7, no PS7 syntax, no ternary operator, no pipeline chain operators, no classes unless already present.
+Must be pipeline aware and compatible
+Never invent cmdlets, parameters, DISM switches, registry paths, or Windows features.
+Preserve all existing logic unless the user explicitly requests a change.
+Maintain indentation, spacing, formatting, naming conventions, and folder structure.
+Maintain all error handling, parameter validation, and checkpoint logic unless explicitly instructed otherwise.
+When returning code, include minimal Claude‑style comments ONLY when the user explicitly asks for explanations.
+Implement all tasks with appropriate try/catch handling using the sample code as a template
+Any provided code in the Sample Code blocks at from the current code and is to be used a template and I expect you to make massive changes
+Any provided code in the Task blocks is mostly conceptual, you may have to improve where possible
+Don't remove internal comments to save space, but update as necessary
+Powershell has a problem with strings like this "$<variable><special characters>" so always use "$($<variable>)<special characters>" or "{0}<special characters>" -f $<variable>
+Host, Verbose, and Debug output behavior:
+  All output must be pipeline-able as the output will often be piped to tee to be captured.
+  Don't duplicate any output from a previous host, verbose, or debug output.
+  Progress bars:
+    No blue powershell progress bars.
+    Best solution is a progress bar that appears if the item is at least 4 times the buffer size or of unknown size using the x% <current size>(/<maximum size, if known>)
+      The output should use the maximum size, if known, to determine how many characters with the thousands separators it'll take to output the maximum size and use
+      that to right-align the <current size>.  The percentage should always use enough space for 100% so everything stayed lined up.
+  Normal operating output behavior with neither -Verbose or -Debug is to give a description of what is happening so the user can see a steady stream of information
+    Always use Write-Host as it is the only output that always works
+    State information for major iterators, especially time consuming ones.
+    The user needs to see the system working.
+  With -Verbose, in addition to the normal output, the parameter lists to important functions need to be output.
+    Fields within iterators need to be displayed as compactly as possible.
+    More detailed state information of the flow.
+  With -Debug, in addition to the verbose output:
+    Add Write-Debug comments, where helpful, for details analysis of complicated areas of the code
+    All output from externally run programs needs to be visible like robocopy and dism
+Run-Dism has a Write-Verbose in it to dump all the parameters passed, so you don't need to do so
+Output a cut/paste or single-click copy replacement for Invoke-ServiceWork
+MULTI-FILE RULES
+When multiple files are provided, treat them as labeled inputs.
+NEVER summarize them.
+NEVER describe them.
+Use them ONLY as reference material unless told to do otherwise.
+Output ONLY the file(s) the user or task file explicitly requests.
+DELIVERABLE RULE
+If the user or task requests a specific file, output ONLY that file’s full contents with no explanation, no summary, and no surrounding text.
+FINAL INSTRUCTIONS
+
+=====================================================================
+The next line must be the last line of this file, DO NOT DELETE
+END OF FILE

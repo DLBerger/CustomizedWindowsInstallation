@@ -330,14 +330,18 @@ MSU directory layout:
 DryRun behavior:
 - With -DryRun, the script completes PREP actions needed to stage the work tree and then prints what would happen for post-PREP actions.
 
-Normal, Verbose, and Debug output behavior:
+Host, Verbose, and Debug output behavior:
 - All output must be pipeline-able as the output will often be piped to tee to be captured.
 - Don't duplicate any output from a previous normal, verbose, or debug output.
 - Progress bars:
     Normal externally run programs like robocopy and dism output is not required, but the progress bar or some type of progress bar is.
     No blue powershell progress bars.
     When robocopy is being used or files are being downloaded, a progress bar showing changes in 10% increments is preferred.
+    Even better is a progress bars that appear if the item is at least 4 times the buffer size or of unknown size using the x% <current size>(/<maximum size, if known>)
+      The output should use the maximum size, if known, to determine how many characters with the thousands separators it'll take to output the maximum size and use
+      that to right-align the <current size>.  The leading % should always use enough space for 100% so everything stayed lined up.
 - Normal operating output behavior with neither -Verbose or -Debug is to give a description of what is happening so the user can see a steady stream of information
+    Always use Write-Host as it is the only output that always works
     State information for major iterators, especially time consuming ones.
     The user needs to see the system working.
 - With -Verbose, in addition to the normal output, the parameter lists to important functions need to be output.
