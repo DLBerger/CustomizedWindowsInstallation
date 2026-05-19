@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "8bf53f4"
+$GitHash = "74f1e42"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -2254,7 +2254,6 @@ function Invoke-ServiceWork {
         Write-Host    "  [Index $idx] $imgName"
         Write-Verbose "Service-Index: WimName='$WimName' Index=$idx IdxName='$IdxName' Name='$imgName' InstallType=$InstallType"
 
-        $imgDest   = Join-Path $paths.WimsIndices  $idxName
         $imgJson   = Join-Path $paths.WimsServiced ("{0}.json" -f $idxName)
         $imgExists = Read-JsonFile -Path $imgJson
 
@@ -2351,7 +2350,7 @@ function Invoke-FinalAssembly {
     }
 
     Write-Host  "Starting Final Assembly workflow..."
-    Write-Verbose "Invoke-FinalAssembly: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
+    Write-Verbose "Invoke-FinalAssembly: WimsServiced='$($paths.WimsServiced)' WimsFinal='$($paths.WimsFinal)'"
 
     # Sanity check out indices first
     if (Test-MissingIndices) { return }
@@ -3373,10 +3372,11 @@ if ($Extract)   { $workSwitches += 'Extract' }
 if ($Export)    { $workSwitches += 'Export' }
 if ($KB)        { $workSwitches += 'KB' }
 if ($Service)   { $workSwitches += 'Service' }
+if ($Final)     { $workSwitches += 'Final' }
+if ($Prep)      { $workSwitches += 'Prep' }
+if ($Files)     { $workSwitches += 'Files' }
 if ($Drivers)   { $workSwitches += 'Drivers' }
 if ($Reg)       { $workSwitches += 'Reg' }
-if ($Files)     { $workSwitches += 'Files' }
-if ($Prep)      { $workSwitches += 'Prep' }
 if ($CreateISO) { $workSwitches += 'CreateISO' }
 
 if ($All -or $Most -or (-not $workSwitches)) {
@@ -3384,10 +3384,11 @@ if ($All -or $Most -or (-not $workSwitches)) {
     $Export  = $true
     $KB      = $true
     $Service = $true
+    $Final   = $true
+    $Prep    = $true
+    $Files   = $true
     $Drivers = $true
     $Reg     = $true
-    $Files   = $true
-    $Prep    = $true
     if ($Most) {
         $workSwitches = @('Most')
     } else {
