@@ -27,6 +27,11 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
+    MetadataJson          = 'wim-metadata.json'
+    ManifestJson          = 'manifest.json'
+    ExtractJson           = 'extract.json'
+    PrepJson              = 'prep.json'
+    FinalJson             = 'final.json'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -65,7 +70,6 @@ $names.RequiredTransforms = @(
         @("$RegistryRoot = 'Registry'", $names.Registry)
     ))
 )
-
 $paths = [ordered]@{}
 $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
 $paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
@@ -102,8 +106,12 @@ $paths.WimsRoot              = Join-Path $Folder $names.Wims
 foreach ($u in $wimDirs) {
     $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
 }
-$paths.InstallWimInFinal     = Join-Path $paths.WimsFinal $names.InstallWim
-$paths.BootWimInFinal        = Join-Path $paths.WimsFinal $names.BootWim
+$paths.ExtractJson           = Join-Path $paths.SrcIsoRoot  $names.ExtractJson
+$paths.PrepJson              = Join-Path $paths.DestIsoRoot $names.PrepJson
+$paths.MetadataJson          = Join-Path $paths.WimsIndices $names.MetadataJson
+$paths.FinalJson             = Join-Path $paths.WimsFinal   $names.FinalJson
+$paths.InstallWimInFinal     = Join-Path $paths.WimsFinal   $names.InstallWim
+$paths.BootWimInFinal        = Join-Path $paths.WimsFinal   $names.BootWim
 DATA END
 CS1 BEGIN
 CS1 END
