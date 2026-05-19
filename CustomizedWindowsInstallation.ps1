@@ -92,7 +92,7 @@ Comma-separated selector string supporting:
 .PARAMETER ISO
 Explicit path to source ISO.
 If omitted, the script discovers the single .iso file in <Folder>.
-If more than one .iso is present an error is raised; use this parameter to disambiguate.
+If more than one .iso is present an error is raised, use this parameter to disambiguate.
 
 .PARAMETER DestISO
 Explicit path to destination ISO.
@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "6e59fe9"
+$GitHash = "8bf53f4"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -296,7 +296,7 @@ $names.RequiredTransforms = @(
 
 # Ensure elevated
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "$PSCommandPath must be run elevated as Administrator."
+    Write-Error "$PSCommandPath must be run elevated as Administrator"
     exit 1
 }
 
@@ -339,9 +339,9 @@ function Show-Usage {
   Write-Host "  <DestISO>  Path to output Windows Install ISO (overrides using <SrcISO>_KBs.iso) or you can use -DestISO" -ForegroundColor Gray
   Write-Host ""
   Write-Host "Index Selections:" -ForegroundColor Cyan
-  Write-Host "  -Home            Select editions whose normalized label matches `"Home`" exactly." -ForegroundColor Gray
-  Write-Host "  -Pro             Select editions whose normalized label matches `"Pro`" exactly." -ForegroundColor Gray
-  Write-Host "  -Indices <spec>  Select editions based on a comma-separated selector string." -ForegroundColor Gray
+  Write-Host "  -Home            Select editions whose normalized label matches `"Home`" exactly" -ForegroundColor Gray
+  Write-Host "  -Pro             Select editions whose normalized label matches `"Pro`" exactly" -ForegroundColor Gray
+  Write-Host "  -Indices <spec>  Select editions based on a comma-separated selector string" -ForegroundColor Gray
   Write-Host "     Where <spec> can include:" -ForegroundColor Gray
   Write-Host "       - numbers and ranges: 6, 3-6, 7-*" -ForegroundColor Gray
   Write-Host "       - exact labels: `"Education N`"" -ForegroundColor Gray
@@ -349,29 +349,29 @@ function Show-Usage {
   Write-Host "       - regex labels: `"re:^Education( N)?$`"" -ForegroundColor Gray
   Write-Host ""
   Write-Host "Work Selections:" -ForegroundColor Cyan
-  Write-Host "  -Extract    Mount the source ISO and extract its full content tree." -ForegroundColor Gray
-  Write-Host "  -Export     Export selected indices from the install.wim and boot.wim." -ForegroundColor Gray
-  Write-Host "  -KB         Download OS and .NET updates." -ForegroundColor Gray
-  Write-Host "  -Service    Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim." -ForegroundColor Gray
+  Write-Host "  -Extract    Mount the source ISO and extract its full content tree" -ForegroundColor Gray
+  Write-Host "  -Export     Export selected indices from the install.wim and boot.wim" -ForegroundColor Gray
+  Write-Host "  -KB         Download OS and .NET updates" -ForegroundColor Gray
+  Write-Host "  -Service    Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim" -ForegroundColor Gray
   Write-Host "  -Final      Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\" -ForegroundColor Gray
-  Write-Host "  -Files      Copy various .cmd, .ps1, and .ini files to the root of DestISO." -ForegroundColor Gray
-  Write-Host "  -Prep       Prepare the destination ISO work area." -ForegroundColor Gray
-  Write-Host "  -CreateISO  Create the DestISO using oscdimg." -ForegroundColor Gray
-  Write-Host "  -All        Shorthand for all work selections." -ForegroundColor Gray
-  Write-Host "  -Most       Shorthand for all work selections except -CreateISO." -ForegroundColor Gray
+  Write-Host "  -Files      Copy various .cmd, .ps1, and .ini files to the root of DestISO" -ForegroundColor Gray
+  Write-Host "  -Prep       Prepare the destination ISO work area" -ForegroundColor Gray
+  Write-Host "  -CreateISO  Create the DestISO using oscdimg" -ForegroundColor Gray
+  Write-Host "  -All        Shorthand for all work selections" -ForegroundColor Gray
+  Write-Host "  -Most       Shorthand for all work selections except -CreateISO" -ForegroundColor Gray
   Write-Host ""
   Write-Host "More Options:" -ForegroundColor Cyan
-  Write-Host "  -ShowIndices     Print available image indices from the source ISO (or cached metadata) and exit." -ForegroundColor Gray
-  Write-Host "  -UseADK          Prefer ADK dism.exe and oscdimg.exe when available." -ForegroundColor Gray
-  Write-Host "  -UseSystem       Force system dism.exe and oscdimg.exe when available." -ForegroundColor Gray
-  Write-Host "  -dism <path>     Explicit path to dism.exe." -ForegroundColor Gray
-  Write-Host "  -oscdimg <path>  Explicit path to oscdimg.exe." -ForegroundColor Gray
-  Write-Host "  -Clean           Overrides all other options combine with <Work Selections> to narrow the selection." -ForegroundColor Gray
-  Write-Host "  -DryRun          Perform a dry run without making any changes." -ForegroundColor Gray
-  Write-Host "  -Debug           Enable debug output." -ForegroundColor Gray
-  Write-Host "  -Verbose         Enable verbose output." -ForegroundColor Gray
-  Write-Host "  -Help            Display help information." -ForegroundColor Gray
-  Write-Host "  -Usage           Display usage information." -ForegroundColor Gray
+  Write-Host "  -ShowIndices     Print available image indices from the source ISO (or cached metadata) and exit" -ForegroundColor Gray
+  Write-Host "  -UseADK          Prefer ADK dism.exe and oscdimg.exe when available" -ForegroundColor Gray
+  Write-Host "  -UseSystem       Force system dism.exe and oscdimg.exe when available" -ForegroundColor Gray
+  Write-Host "  -dism <path>     Explicit path to dism.exe" -ForegroundColor Gray
+  Write-Host "  -oscdimg <path>  Explicit path to oscdimg.exe" -ForegroundColor Gray
+  Write-Host "  -Clean           Overrides all other options combine with <Work Selections> to narrow the selection" -ForegroundColor Gray
+  Write-Host "  -DryRun          Perform a dry run without making any changes" -ForegroundColor Gray
+  Write-Host "  -Debug           Enable debug output" -ForegroundColor Gray
+  Write-Host "  -Verbose         Enable verbose output" -ForegroundColor Gray
+  Write-Host "  -Help            Display help information" -ForegroundColor Gray
+  Write-Host "  -Usage           Display usage information" -ForegroundColor Gray
   Write-Host ""
 }
 
@@ -465,7 +465,7 @@ function Stream-FileCopy {
     # Build dynamic format string for progress output, aligning byte counts to the right based on the total size
     $maxBytesWidth = $totalBytes.ToString("N0").Length
     $percentWidth  = 3   # always 0–100
-    $fmt = "Copy progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
+    $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
     $copiedBytes = [int64]0
     $lastReportedPercent = -1
@@ -526,7 +526,7 @@ function Stream-FileCopy {
                 $retries--
             }
             else {
-                throw "Stream-FileCopy failed after retries: $_"
+                throw "Stream-FileCopy failed after retries"
             }
         }
         finally {
@@ -540,7 +540,7 @@ function Stream-FileCopy {
         }
     }
 
-    Write-Host "Copy complete."
+    Write-Host "Copy complete"
 }
 
 function Read-JsonFile {
@@ -718,7 +718,7 @@ function Report-Missing {
 # ==============================
 
 function Find-ADKTool {
-    # Locate an ADK tool (e.g. dism.exe, oscdimg.exe) using this priority:
+    # Locate an ADK tool (e.g., dism.exe, oscdimg.exe) using this priority:
     #   1. Explicit path supplied by the caller
     #   2. Windows ADK installation (preferred when -PreferADK or -UseADK)
     #   3. System32 / PATH
@@ -726,10 +726,10 @@ function Find-ADKTool {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$ToolName,       # filename, e.g. 'dism.exe'
+        [string]$ToolName,       # filename, e.g., 'dism.exe'
 
         [Parameter(Mandatory)]
-        [string]$ADKSubfolder,   # subfolder under each arch dir, e.g. 'DISM' or 'Oscdimg'
+        [string]$ADKSubfolder,   # subfolder under each arch dir, e.g., 'DISM' or 'Oscdimg'
 
         [string]$ExplicitPath,   # value of -dism / -oscdimg parameter
         [switch]$PreferADK,      # -UseADK
@@ -796,7 +796,7 @@ function Find-ADKTool {
         return $systemPath
     }
 
-    Write-Warning "$ToolName not found. Install Windows ADK or specify the path explicitly."
+    Write-Warning "$ToolName not found, install Windows ADK or specify the path explicitly"
     return $null
 }
 
@@ -891,42 +891,33 @@ function Get-WimMetadata {
 # ==============================
 
 function Resolve-IndexSelection {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object[]]$AllImages,
-        [switch]$SelectHome,
-        [switch]$SelectPro,
-        [string]$IndicesStr
-    )
-
-    Write-Debug "Resolve-IndexSelection: Home=$SelectHome Pro=$SelectPro Indices='$IndicesStr' TotalImages=$($AllImages.Count)"
+    Write-Debug "Resolve-IndexSelection: Home=$SelectHome Pro=$SelectPro Indices='$Indices' TotalImages=$($InstallImages.Count)"
 
     function Get-NormalizedLabel([string]$name) {
         ($name -replace '^Windows\s+(10|11)\s+', '').Trim()
     }
 
-    $anyExplicit = $SelectHome -or $SelectPro -or $IndicesStr
+    $anyExplicit = $SelectHome -or $SelectPro -or $Indices
 
     if (-not $anyExplicit) {
-        Write-Verbose "No explicit index selection; returning all $($AllImages.Count) indices"
-        return $AllImages
+        Write-Verbose "No explicit index selection, returning all $($InstallImages.Count) indices"
+        return $InstallImages
     }
 
     $selected = [System.Collections.Generic.List[object]]::new()
 
     if ($SelectHome) {
         Write-Verbose "Selecting 'Home' editions"
-        $AllImages | Where-Object { (Get-NormalizedLabel $_.Name) -eq 'Home' } | ForEach-Object { $selected.Add($_) }
+        $InstallImages | Where-Object { (Get-NormalizedLabel $_.Name) -eq 'Home' } | ForEach-Object { $selected.Add($_) }
     }
 
     if ($SelectPro) {
         Write-Verbose "Selecting 'Pro' editions"
-        $AllImages | Where-Object { (Get-NormalizedLabel $_.Name) -eq 'Pro' } | ForEach-Object { $selected.Add($_) }
+        $InstallImages | Where-Object { (Get-NormalizedLabel $_.Name) -eq 'Pro' } | ForEach-Object { $selected.Add($_) }
     }
 
-    if ($IndicesStr) {
-        $tokens = $IndicesStr -split '\s*,\s*'
+    if ($Indices) {
+        $tokens = $Indices -split '\s*,\s*'
         foreach ($token in $tokens) {
             $token = $token.Trim().Trim('"').Trim("'")
             Write-Verbose "  Processing token: '$token'"
@@ -935,24 +926,24 @@ function Resolve-IndexSelection {
                 $from = [int]$Matches[1]
                 $to   = if ($Matches[2] -eq '*') { [int]::MaxValue } else { [int]$Matches[2] }
                 Write-Debug "    Range $from-$to"
-                $AllImages | Where-Object { $_.Index -ge $from -and $_.Index -le $to } | ForEach-Object { $selected.Add($_) }
+                $InstallImages | Where-Object { $_.Index -ge $from -and $_.Index -le $to } | ForEach-Object { $selected.Add($_) }
             }
             elseif ($token -match '^\d+$') {
                 Write-Debug "    Single index $token"
-                $AllImages | Where-Object { $_.Index -eq [int]$token } | ForEach-Object { $selected.Add($_) }
+                $InstallImages | Where-Object { $_.Index -eq [int]$token } | ForEach-Object { $selected.Add($_) }
             }
             elseif ($token -match '^re:(.+)$') {
                 $pattern = $Matches[1]
                 Write-Debug "    Regex '$pattern'"
-                $AllImages | Where-Object { $_.Name -match $pattern } | ForEach-Object { $selected.Add($_) }
+                $InstallImages | Where-Object { $_.Name -match $pattern } | ForEach-Object { $selected.Add($_) }
             }
             elseif ($token -match '[*?]') {
                 Write-Debug "    Wildcard '$token'"
-                $AllImages | Where-Object { $_.Name -like $token } | ForEach-Object { $selected.Add($_) }
+                $InstallImages | Where-Object { $_.Name -like $token } | ForEach-Object { $selected.Add($_) }
             }
             else {
                 Write-Debug "    Exact label '$token'"
-                $AllImages | Where-Object { $_.Name -eq $token } | ForEach-Object { $selected.Add($_) }
+                $InstallImages | Where-Object { $_.Name -eq $token } | ForEach-Object { $selected.Add($_) }
             }
         }
     }
@@ -990,11 +981,11 @@ function Invoke-ExtractISO {
     Write-Verbose "Invoke-ExtractISO: ISO='$ISO' SrcIsoContent='$($paths.SrcIsoContent)'"
 
     if (-not $ISO -or -not (Test-Path $ISO)) {
-        Write-Warning "Source ISO not found or not specified. Use -ISO to point to your Windows .iso file."
+        Write-Warning "Source ISO not found or not specified, use -ISO to point to your Windows .iso file"
         return
     }
 
-    # Checkpoint: skip if same ISO was already extracted; clean and re-extract if ISO changed
+    # Checkpoint: skip if same ISO was already extracted, clean and re-extract if ISO changed
     $extractJson  = $paths.ExtractJson
     $existingJson = Read-JsonFile -Path $extractJson
     if ($existingJson) {
@@ -1003,7 +994,7 @@ function Invoke-ExtractISO {
             Write-Debug "$($extractJson): ISOPath='$($existingJson.ISOPath)' Date='$($existingJson.Date)'"
             return
         }
-        Write-Host "ISO path changed (was '$($existingJson.ISOPath)'); cleaning SrcIsoRoot and re-extracting..."
+        Write-Host "ISO path changed (was '$($existingJson.ISOPath)'), cleaning SrcIsoRoot and re-extracting..."
         Remove-Folder $paths.SrcIsoRoot
     }
 
@@ -1018,7 +1009,7 @@ function Invoke-ExtractISO {
             $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
             if ($null -eq $vol) { Start-Sleep -Seconds 1 }
         }
-        if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize." }
+        if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
 
         # Create a 'safe' path for Test-Path
         $driveLetterRaw = $vol.DriveLetter + ":"      # e.g., "D:"
@@ -1034,7 +1025,7 @@ function Invoke-ExtractISO {
             (Join-Path $driveLetter $paths.InstallWimInIso),
             (Join-Path $driveLetter $paths.InstallEsdInIso)
         )) {
-            throw "Source ISO validation failed. See above for missing file details."
+            throw "Source ISO validation failed, see above for missing file details"
         }
         Write-Host "Source ISO validation passed"
 
@@ -1061,7 +1052,7 @@ function Invoke-ExtractISO {
         # Build dynamic format string
         $maxBytesWidth = $totalBytes.ToString("N0").Length
         $percentWidth  = 3
-        $fmt = "Copy progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
+        $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
         # Initial line
         Write-Host ($fmt -f 0, 0, $totalBytes)
@@ -1088,7 +1079,7 @@ function Invoke-ExtractISO {
                     $sourceStream = $null
                     $destStream   = $null
                     $bytesWrittenThisAttempt = [int64]0
-                    $aborted = $true # Default to true; proven false only on complete file success
+                    $aborted = $true # Default to true, proven false only on complete file success
                     
                     try {
                         # Ensure parent directory exists before streaming
@@ -1131,7 +1122,7 @@ function Invoke-ExtractISO {
                             Start-Sleep -Seconds 1
                             $retries--
                         } else {
-                            throw "Native stream copy failed for '$($item.FullName)' to '$targetPath' after retries: $_"
+                            throw "Native stream copy failed for '$($item.FullName)' to '$targetPath' after retries"
                         }
                     } finally {
                         # CRITICAL: This block executes even if the pipeline is halted via Ctrl+C
@@ -1190,56 +1181,66 @@ function Invoke-Export {
     $extractJson = $paths.ExtractJson
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
-        Write-Warning "$extractJson not found. Run -Extract first."
+        Write-Warning "$extractJson not found, run -Extract first"
         return
     }
     $extractDate = [datetime]::Parse($extractMeta.Date)
 
-    # Locate source WIMs
-    $installSrc = if (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
-                  elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
-                  else { $null }
-    $bootSrc    = if (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc } else { $null }
+    # Use MetadataJson if nothing has changed
+    $metadataJson = $paths.MetadataJson
+    $wimMeta      = Read-JsonFile -Path $metadataJson
+    if (-not $wimMeta -or ($wimMeta.ISOPath -ne $ISO)) {
+        # Locate source WIMs
+        $installSrc = if     (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
+                    elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
+                    else   { $null }
+        $bootSrc    = if     (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
+                    else { $null }
 
-    if (-not $installSrc) {
-        Write-Warning "Install image not found in $($paths.SourcesInSrc). Run -Extract first."
-        return
+        if (-not $installSrc) {
+            Write-Warning "Install image not found in $($paths.SourcesInSrc), run -Extract first"
+            return
+        }
+        if (-not $bootSrc) {
+            Write-Warning "Boot image not found in $($paths.SourcesInSrc), run -Extract first"
+            return
+        }
+
+        Write-Verbose "install source: $installSrc"
+        Write-Verbose "boot source   : $bootSrc"
+
+        # Collect WIM metadata and write MetadataJson
+        Write-Host "Collecting WIM metadata..."
+        $installMeta = Get-WimMetadata -WimPath $installSrc
+        $bootMeta    = Get-WimMetadata -WimPath $bootSrc
+
+        # Reset our globals
+        $InstallImages = $installMeta.Images
+        $BootImages    = $bootMeta.Images
+
+        Write-JsonFile -Path $MetadataJson -Data @{
+            ISOPath       = $extractMeta.ISOPath
+            CollectedDate = (Get-Date -Format s)
+            WinOS         = $installMeta.WinOS
+            Version       = $installMeta.Version
+            Arch          = $installMeta.Arch
+            Build         = $installMeta.Build
+            InstallImages = @($InstallImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+            BootImages    = @($BootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+        }
+        Write-Host "WIM metadata saved ($($InstallImages.Count) install image(s), $($BootImages.Count) boot image(s))"
+    } else {
+        Write-Host "Using existing WIM metadata..."
+
+        # Reset our globals
+        $InstallImages = $wimMeta.InstallImages
+        $BootImages    = $wimMeta.BootImages
     }
-    if (-not $bootSrc) {
-        Write-Warning "Boot image not found in $($paths.SourcesInSrc). Run -Extract first."
-        return
-    }
 
-    Write-Verbose "install source: $installSrc"
-    Write-Verbose "boot source   : $bootSrc"
+    # Resolve anything that hasn't been
+    $InstallIndices = Resolve-IndexSelection
 
-    # Collect WIM metadata and write $paths.MetadataJson
-    Write-Host "Collecting WIM metadata..."
-    $installMeta = Get-WimMetadata -WimPath $installSrc
-    $bootMeta    = Get-WimMetadata -WimPath $bootSrc
-
-    # Reset our globals
-    $InstallImages = $installMeta.Images
-    $BootImages    = $bootMeta.Images
-
-    Write-JsonFile -Path $paths.MetadataJson -Data @{
-        ISOPath       = $extractMeta.ISOPath
-        CollectedDate = (Get-Date -Format s)
-        WinOS         = $installMeta.WinOS
-        Version       = $installMeta.Version
-        Arch          = $installMeta.Arch
-        Build         = $installMeta.Build
-        InstallImages = @($InstallImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-        BootImages    = @($BootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-    }
-    Write-Host "WIM metadata saved ($($InstallImages.Count) install image(s), $($BootImages.Count) boot image(s))"
-
-    # Resolve index selection if not already set
-    if ($InstallIndices.Count -eq 0) {
-        Write-Verbose "InstallIndices empty; resolving from collected metadata..."
-        $InstallIndices = @(Resolve-IndexSelection -AllImages $InstallImages -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
-        Write-Verbose "Resolved $($InstallIndices.Count) index/indices"
-    }
+    # Give a recap of what we found and what we're about to export
     Write-Host "$($names.InstallWim) all indices: $($InstallImages.Index -join ', ') indices to export: $($InstallIndices.Index -join ', ')"
     Write-Host "$($names.BootWim)    all indices: $($BootImages.Index -join ', ')"
 
@@ -1266,8 +1267,8 @@ function Invoke-Export {
                        "`"/DestinationImageFile:$installDest`"", "/Compress:None", "/CheckIntegrity") -Indent 4
             $rc = $LASTEXITCODE
             if ($rc -ne 0) {
-                Write-Warning "    DISM export failed for $WimName index $idx (exit $(& $Hex $rc))."
-                Write-Warning "    Try running this script again. Skipping export for this index for now."
+                Write-Warning "    DISM export failed for $WimName index $idx (exit $(& $Hex $rc))"
+                Write-Warning "    Try running this script again, skipping export for this index for now"
                 return
             }
             Write-JsonFile -Path $installJson -Data @{ Index = $idx; Name = $imgName; ExportDate = (Get-Date -Format s) }
@@ -1970,8 +1971,7 @@ function Invoke-KBWork {
 
         $existingFiles = @()
         if (Test-Path $folder) {
-            $existingFiles = Get-ChildItem -Path $folder -File |
-                             Select-Object -ExpandProperty Name
+            $existingFiles = Get-ChildItem -Path $folder -File | Select-Object -ExpandProperty Name
         }
 
         $stale = $existingFiles | Where-Object { $_ -notin $requiredFiles }
@@ -2030,8 +2030,7 @@ function Test-MissingIndices {
     } else {
         $hasInstallIndices = ($InstallIndices -and $InstallIndices.Count -gt 0)
         $hasBootImages = ($BootImages -and $BootImages.Count -gt 0)
-        $missing = (-not ($hasInstallIndices -and $hasBootImages))
-        if ($missing) {
+        if (-not ($hasInstallIndices -and $hasBootImages)) {
             $s = ""
             if (-not $hasInstallIndices) { $s += "InstallIndices" }
             if (-not $hasInstallIndices -and -not $hasBootImages) { $s += " and " }
@@ -2047,7 +2046,7 @@ function Test-MissingIndices {
     }
     
     # Something is missing, warn and report it
-    Write-Warning ("{0}. Run with -Export first." -f $m)
+    Write-Warning ("{0}, run with -Export first" -f $m)
     return $true
 }
 
@@ -2059,7 +2058,6 @@ function Invoke-ServiceWork {
         Clean-Folder $paths.WimsMounts
         Clean-Folder $paths.WimsScratch
         Clean-Folder $paths.WimsServiced
-        Clean-Folder $paths.WimsFinal
         return
     }
 
@@ -2068,8 +2066,6 @@ function Invoke-ServiceWork {
         Write-Host "[DryRun] Would apply SSU packages from : $($paths.KBsSSU)"
         Write-Host "[DryRun] Would apply LCU packages from : $($paths.KBsOSCU)"
         Write-Host "[DryRun] Would service winre.wim inside each index's install.wim"
-        Write-Host "[DryRun] Would assemble final install.wim -> $($paths.InstallWimInDest)"
-        Write-Host "[DryRun] Would assemble final boot.wim   -> $($paths.BootWimInDest)"
         return
     }
 
@@ -2079,18 +2075,16 @@ function Invoke-ServiceWork {
 
     $scratchDir = $paths.WimsScratch
 
-    # Sanity check out indices first
+    # Sanity check our indices first
     if (Test-MissingIndices) { return }
 
     Remove-Folder $paths.WimsMounts
     Remove-Folder $paths.WimsScratch
     Remove-Folder $paths.WimsServiced
-    Remove-Folder $paths.WimsFinal
     Ensure-Folder $paths.WimsMounts
     Ensure-Folder $paths.WimsServiced
     Ensure-Folder $paths.WimsScratch
     Ensure-Folder $paths.WimsLogs
-    Ensure-Folder $paths.WimsFinal
 
     # Gather available packages (.msu and .cab)
     $ssuFiles = @(
@@ -2111,7 +2105,7 @@ function Invoke-ServiceWork {
         [CmdletBinding()]
         param(
             [Parameter(Mandatory = $true)]
-            [string] $WimName,
+            [string] $IdxName,
 
             [Parameter(Mandatory = $true)]
             [string] $MountDir,
@@ -2139,10 +2133,10 @@ function Invoke-ServiceWork {
             [System.IO.FileInfo[]] $Pkgs
         )
 
-        Write-Verbose "Add-Packages: WimName='$WimName' MountDir='$MountDir' Src='$Src' Dest='$Dest' Mount=$Mount Unmount=$Unmount PkgName='$PkgName' Pkgs=$($Pkgs.Count)"
+        Write-Verbose "Add-Packages: IdxName='$IdxName' MountDir='$MountDir' Src='$Src' Dest='$Dest' Mount=$Mount Unmount=$Unmount PkgName='$PkgName' Pkgs=$($Pkgs.Count)"
 
         if ([string]::IsNullOrWhiteSpace($Src) -or -not (Test-Path $Src)) {
-            throw "Add-Packages: Source '$Src' is required but missing or empty."
+            throw "Add-Packages: Source '$Src' is required but missing or empty"
         }
 
         # This copy is key as we need to get the file into Servicing was we don't corrupt the original extracted file in case we need to retry servicing after a failure.
@@ -2150,7 +2144,7 @@ function Invoke-ServiceWork {
         $effectiveDest = $Dest
         if ([string]::IsNullOrWhiteSpace($Dest)) {
             $effectiveDest = $Src
-            Write-Verbose "Add-Packages: Dest empty; using Src as Dest ('$effectiveDest')."
+            Write-Verbose "Add-Packages: Dest empty, using Src as Dest ('$effectiveDest')"
         } elseif ($Src -ne $Dest) {
             # Stream-FileCopy will tell us what it's doing
             Stream-FileCopy -SourcePath $Src -DestinationPath $Dest
@@ -2160,7 +2154,7 @@ function Invoke-ServiceWork {
         # We can bail early if there are no packages to apply if there are no packages to apply on we're mounting and dismounting
         $hasPkgs = $Pkgs -and $Pkgs.Count -gt 0
         if (-not $hasPkgs -and $Mount -and $Unmount) {
-            Write-Verbose "Add-Packages: No $PkgName files to apply and mounting/unmounting so nothing to do."
+            Write-Verbose "Add-Packages: No $PkgName files to apply and mounting/unmounting so nothing to do"
             return
         }
 
@@ -2169,7 +2163,7 @@ function Invoke-ServiceWork {
                 Ensure-Folder $MountDir
                 $leaf     = Split-Path -Path $effectiveDest -Leaf
                 $safeLeaf = Protect-Token $leaf
-                $mountLog = Join-Path $paths.WimsLogs ("mount_{0}_{1}.log" -f $WimName, $safeLeaf)
+                $mountLog = Join-Path $paths.WimsLogs ("mount_{0}_{1}.log" -f $idxName, $safeLeaf)
 
                 Write-Host "  Mounting $effectiveDest -> $MountDir"
                 Run-Dism @(
@@ -2189,13 +2183,13 @@ function Invoke-ServiceWork {
                 foreach ($pkg in $Pkgs) {
                     $leaf   = Split-Path $pkg.FullName -Leaf
                     $safe   = Protect-Token $leaf
-                    $pkgLog = Join-Path $paths.WimsLogs ("pkg_{0}_{1}_{2}.log" -f $WimName, (Protect-Token (Split-Path $MountDir -Leaf)), $safe)
+                    $pkgLog = Join-Path $paths.WimsLogs ("pkg_{0}_{1}_{2}.log" -f $idxName, (Protect-Token (Split-Path $MountDir -Leaf)), $safe)
 
                     # Clean the scratch directory before each package application to avoid DISM errors
                     Remove-Folder $scratchDir
                     Ensure-Folder $scratchDir
 
-                    Write-Host "  Applying $PkgName file to $($WimName): $($pkg.Name)"
+                    Write-Host "  Applying $PkgName file to $($idxName): $($pkg.Name)"
                     Run-Dism @(
                         "/Add-Package",
                         "`"/Image:$MountDir`"",
@@ -2204,15 +2198,15 @@ function Invoke-ServiceWork {
                         "`"/LogPath:$pkgLog`""
                     ) -Indent 2
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Warning "  Add-Package failed for $($pkg.Name) on $WimName (exit $(& $Hex $LASTEXITCODE)) - continuing."
+                        Write-Warning "  Add-Package failed for $($pkg.Name) on $idxName (exit $(& $Hex $LASTEXITCODE)) - continuing"
                     }
                 }
             } else {
-                Write-Host "  No $PkgName files supplied for $WimName so skipping package application."
+                Write-Host "  No $PkgName files supplied for $idxName so skipping package application"
             }
 
             if ($Unmount) {
-                Write-Host "  Unmounting $WimName at $MountDir (commit)..."
+                Write-Host "  Unmounting $idxName at $MountDir (commit)..."
                 Run-Dism @(
                     "/Unmount-Image",
                     "`"/MountDir:$MountDir`"",
@@ -2224,7 +2218,7 @@ function Invoke-ServiceWork {
             }
         }
         catch {
-            Write-Host "  ERROR in Add-Packages for $($WimName): $_"
+            Write-Host "  ERROR in Add-Packages for $($idxName)"
             if (Test-Path $MountDir) {
                 Write-Host "  Discarding mounted image at $($MountDir)..."
                 Run-Dism @(
@@ -2254,13 +2248,14 @@ function Invoke-ServiceWork {
         )
 
         $idx     = $Img.Index
+        $idxName = ("{0}_{1}" -f $idx, $WimName)
         $imgName = $Img.Name
 
         Write-Host    "  [Index $idx] $imgName"
-        Write-Verbose "Service-Index: WimName='$WimName' Index=$idx Name='$imgName' InstallType=$InstallType"
+        Write-Verbose "Service-Index: WimName='$WimName' Index=$idx IdxName='$IdxName' Name='$imgName' InstallType=$InstallType"
 
-        $imgDest   = Join-Path $paths.WimsIndices  ("{0}_{1}"      -f $idx, $WimName)
-        $imgJson   = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimName)
+        $imgDest   = Join-Path $paths.WimsIndices  $idxName
+        $imgJson   = Join-Path $paths.WimsServiced ("{0}.json" -f $idxName)
         $imgExists = Read-JsonFile -Path $imgJson
 
         $imgNeeded = $true
@@ -2269,7 +2264,7 @@ function Invoke-ServiceWork {
                 $lastServiced = [datetime]::Parse($imgExists.ServicedDate)
                 $imgNeeded    = $lastServiced -le $extractDate
             } catch {
-                Write-Verbose "Service-Index: Failed to parse ServicedDate for $WimName index $idx; will re-service."
+                Write-Verbose "Service-Index: Failed to parse ServicedDate for $WimName index $($idx), will re-service"
                 $imgNeeded = $true
             }
         }
@@ -2279,33 +2274,33 @@ function Invoke-ServiceWork {
             return
         }
 
-        $mountDir = Join-Path $paths.WimsMounts   ("mount_{0}_{1}" -f $idx, $WimName)
-        $wimPath  = Join-Path $paths.WimsIndices  ("{0}_{1}"       -f $idx, $WimName)
-        $srvPath  = Join-Path $paths.WimsServiced ("{0}_{1}"       -f $idx, $WimName)
+        $mountDir = Join-Path $paths.WimsMounts   ("mount_{0}" -f $idxName)
+        $wimPath  = Join-Path $paths.WimsIndices  $idxName
+        $srvPath  = Join-Path $paths.WimsServiced $idxName
 
         Write-Debug "Service-Index: mountDir='$mountDir' wimPath='$wimPath' srvPath='$srvPath'"
 
         try {
             if ($InstallType) {
                 # Copy extracted to serviced, mount and service SSUs (may be empty) on install.wim
-                Add-Packages -WimName $WimName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $false -PkgName "SSU" -Pkgs $ssuFiles
+                Add-Packages -IdxName $idxName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $false -PkgName "SSU" -Pkgs $ssuFiles
 
                 # Mount embedded WinRE, service with SSUs, and dismount
                 $winrePath = Join-Path $mountDir $paths.WinreWimInWim
-                Add-Packages -WimName $names.WinreWim -MountDir $mountDir -Src $winrePath -Dest "" -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
+                Add-Packages -IdxName $names.WinreWim -MountDir $mountDir -Src $winrePath -Dest "" -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
 
                 # Service LCUs on install.wim and finally dismount
-                Add-Packages -WimName $WimName -MountDir $mountDir -Src $srvPath -Dest "" -Mount $false -Unmount $true -PkgName "LCU" -Pkgs $lcuFiles
+                Add-Packages -IdxName $IdxName -MountDir $mountDir -Src $srvPath -Dest "" -Mount $false -Unmount $true -PkgName "LCU" -Pkgs $lcuFiles
             } else {
                 # Boot WIM: mount, service with SSUs (may be empty), and dismount
-                Add-Packages -WimName $WimName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
+                Add-Packages -Idx $IdxName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
             }
 
             Write-JsonFile -Path $imgJson -Data @{ Index = $idx; Name = $imgName; ServicedDate = (Get-Date -Format s) }
             Write-Host "  $WimName index $idx serviced"
         }
         catch {
-            Write-Host "  ERROR servicing $WimName index $($idx): $_"
+            Write-Host "  ERROR servicing $WimName index $($idx)"
             throw
         }
         finally {
@@ -2336,7 +2331,6 @@ function Invoke-ServiceWork {
 
     # Clean the scratch directory
     Remove-Folder $scratchDir
-    Ensure-Folder $scratchDir
 
     Write-Host "Service workflow complete"
 }
@@ -2551,7 +2545,7 @@ function Invoke-RegWork {
         $allValues = $allValues | Sort-Object -Unique
 
         if (-not $allValues -or $allValues.Count -eq 0) {
-            Write-Host "No specific values requested for $key; skipping."
+            Write-Host "No specific values requested for $key, skipping"
             return
         }
 
@@ -2962,7 +2956,7 @@ function Invoke-PrepDestISO {
 
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
-        Write-Warning "$extractJson not found. Run -Extract first."
+        Write-Warning "$extractJson not found, run -Extract first"
         return
     }
     $extractDate = [datetime]::Parse($extractMeta.Date)
@@ -3020,7 +3014,7 @@ function Invoke-PrepDestISO {
                 try {
                     New-Item -ItemType HardLink -Path $dest -Value $file.FullName -Force -ErrorAction Stop | Out-Null
                 } catch {
-                    Write-Warning "Hardlink failed for '$rel'; copying: $_"
+                    Write-Warning "Hardlink failed for '$rel', copying: $_"
                     Copy-Item -Path $file.FullName -Destination $dest -Force
                 }
             }
@@ -3090,22 +3084,22 @@ function Invoke-CreateISOWork {
     $prepJson = $paths.PrepJson
     $prepMeta = Read-JsonFile -Path $prepJson
     if (-not $prepMeta) {
-        Write-Warning "$prepJson not found. Run -Prep first to prepare the destination ISO content."
+        Write-Warning "$prepJson not found, run -Prep first to prepare the destination ISO content"
         return
     }
 
     if (-not $oscdimgExe) {
-        Write-Warning "oscdimg.exe not found. Install Windows ADK or specify -oscdimg."
+        Write-Warning "oscdimg.exe not found, install Windows ADK or specify -oscdimg"
         return
     }
     if (-not $DestISO) {
-        Write-Warning "DestISO path is not set. Specify -DestISO or ensure -ISO is provided."
+        Write-Warning "DestISO path is not set, use -DestISO or -ISO is provided"
         return
     }
 
     # Sanity check for boot files before invoking oscdimg
     if (Report-Missing -Required @($paths.BIOSInDest, $paths.UEFIInDest)) {
-        Write-Warning "Boot files are missing from the destination ISO content. Run -Prep first to prepare the destination ISO."
+        Write-Warning "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
         return
     }
 
@@ -3157,15 +3151,15 @@ $dismExe    = Find-ADKTool -ToolName 'dism.exe'    -ADKSubfolder 'DISM'    -Expl
 $oscdimgExe = Find-ADKTool -ToolName 'oscdimg.exe' -ADKSubfolder 'Oscdimg' -ExplicitPath $oscdimg -PreferADK:$UseADK -ForceSystem:$UseSystem
 
 if (-not $dismExe) {
-    Write-Host "ERROR: dism.exe is required but was not found."
-    Write-Host "       Install the Windows ADK or use -dism to specify its path."
+    Write-Host "ERROR: dism.exe is required but was not found"
+    Write-Host "       Install the Windows ADK or use -dism to specify its path"
     exit 1
 }
 Write-Host (&$LeadIn "dism" "$dismExe")
 if ($oscdimgExe) {
     Write-Host (&$LeadIn "oscdimg" "$oscdimgExe")
 } else {
-    Write-Host (&$LeadIn "oscdimg" "not found (ISO creation unavailable; -CreateISO will fail)")
+    Write-Host (&$LeadIn "oscdimg" "not found (ISO creation unavailable, -CreateISO will fail)")
 }
 
 # ==============================
@@ -3218,18 +3212,18 @@ $paths.BootWimInFinal        = Join-Path $paths.WimsFinal   $names.BootWim
 # Resolve source ISO
 # ==============================
 if (-not $ISO) {
-    Write-Verbose "No -ISO specified; searching for *.iso in: $Folder"
+    Write-Verbose "No -ISO specified, searching for *.iso in: $Folder"
     $isoFiles = @(Get-ChildItem -Path $Folder -Filter '*.iso' -File -ErrorAction SilentlyContinue)
     if ($isoFiles.Count -eq 0) {
         $needsISO = $Extract -or $Export -or (-not ($KB -or $Service -or $Drivers -or $Reg -or $Files -or $Prep -or $CreateISO))
         if ($needsISO -and -not $Clean -and -not $DryRun) {
-            Write-Error "No .iso file found in: $Folder`nPlace the Windows ISO there or use -ISO to specify its path."
+            Write-Error "No .iso file found in: $Folder`nPlace the Windows ISO there or use -ISO to specify its path"
             exit 1
         }
-        Write-Verbose "No ISO found; continuing (ISO not required for selected operations)"
+        Write-Verbose "No ISO found, continuing (ISO not required for selected operations)"
         $ISO = $null
     } elseif ($isoFiles.Count -gt 1) {
-        Write-Error ("Multiple .iso files found in: $Folder`n  {0}`nUse -ISO to specify which one to use." -f ($isoFiles.FullName -join "`n  "))
+        Write-Error ("Multiple .iso files found in: $Folder`n  {0}`nUse -ISO to specify which one to use" -f ($isoFiles.FullName -join "`n  "))
         exit 1
     } else {
         $ISO = $isoFiles[0].FullName
@@ -3320,7 +3314,7 @@ if (-not $DryRun -and -not $Clean) {
                 $vol = $metaDiskImg | Get-Volume -ErrorAction SilentlyContinue
                 if ($null -eq $vol) { Start-Sleep -Seconds 1 }
             }
-            if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize." }
+            if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
 
             $metaDrive = $vol.DriveLetter + ':\'
             $installWim  = if     (Test-Path "$metaDrive$($paths.InstallWimInIso)") { "$metaDrive$($paths.InstallWimInIso)" }
@@ -3349,7 +3343,7 @@ if (-not $DryRun -and -not $Clean) {
     # ==============================
     if ($ShowIndices) {
         if ($InstallImages.Count -eq 0) {
-            Write-Error "Cannot show indices: no metadata available. Run -Extract or -Export first, or provide -ISO."
+            Write-Error "Cannot show indices: no metadata available, run -Extract first, or provide -ISO"
             exit 1
         }
         Write-Host "`nAvailable images in $($names.InstallWim) [source: $metaSrc]:`n"
@@ -3365,10 +3359,9 @@ if (-not $DryRun -and -not $Clean) {
     # ==============================
     $InstallIndices = @()
     if ($InstallImages.Count -gt 0) {
-        $InstallIndices = @(Resolve-IndexSelection -AllImages $InstallImages -SelectHome:$SelectHome -SelectPro:$SelectPro -IndicesStr $Indices)
+        $InstallIndices = Resolve-IndexSelection
     } else {
-        Write-Verbose "Image list unavailable yet; index selection deferred until -Export"
-        $InstallIndices = @()
+        Write-Verbose "Image list unavailable yet, index selection deferred until -Export"
     }
 }
 
@@ -3454,7 +3447,7 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 
             $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
             if (-not $sourceDll) {
-                Write-Host "ERROR: $HtmlAgilityPackDll not found inside the downloaded NuGet package. KB downloads will not work."
+                Write-Host "ERROR: $HtmlAgilityPackDll not found inside the downloaded NuGet package, KB downloads will not work"
                 return
             }
 
@@ -3506,7 +3499,7 @@ try {
 } catch {
     Write-Host ""
     Write-Host "ERROR: $_"
-    Write-Host "       Run the script again once the issue is resolved; completed steps will be skipped."
+    Write-Host "       Run the script again once the issue is resolved, completed steps will be skipped"
     exit 1
 } finally {
     # -----------------------------------------------------------------------
