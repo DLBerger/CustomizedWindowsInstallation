@@ -1,12 +1,8 @@
 BEGINNING OF FILE
 If you don't see a corresponding END OF FILE at the very end of this,
-then you don't have the complete task information, you shall fail
-immediately and report the failure.
-=====================================================================
-Prerequisites BEGIN
-# ==============================
-# Core names
-# ==============================
+then you don't have the complete information, you shall fail immediately
+and report the failure
+DATA BEGIN
 $names = [ordered]@{
     SrcIso                = 'SrcISO'
     DestIso               = 'DestISO'
@@ -43,9 +39,6 @@ foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
 
-# ==============================
-# RequiredFiles and RequiredTransforms
-# ==============================
 $names.RequiredFiles = @(
     $names.InstallDriversCmd,
     $names.InstallRegsCmd,
@@ -58,8 +51,6 @@ $names.RequiredFiles = @(
     $names.UpgradeCmd
 )
 
-# Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
-# **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
 $names.RequiredTransforms = @(
     @($names.ExportDriversCmd, @(
         @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
@@ -75,9 +66,6 @@ $names.RequiredTransforms = @(
     ))
 )
 
-# ==============================
-# Core paths (requires $Folder)
-# ==============================
 $paths = [ordered]@{}
 $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
 $paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
@@ -116,67 +104,74 @@ foreach ($u in $wimDirs) {
 }
 $paths.InstallWimInFinal     = Join-Path $paths.WimsFinal $names.InstallWim
 $paths.BootWimInFinal        = Join-Path $paths.WimsFinal $names.BootWim
-Prerequisites END
-Sample Code 1 BEGIN
-Sample Code 1 END
-Sample Code 2 BEGIN
-Sample Code 2 END
-Task 1 BEGIN
-Task 1 END
-Task 2 BEGIN
-Task 2 END
-Task 3 BEGIN
-Task 3 END
+DATA END
+CS1 BEGIN
+CS1 END
+CS2 BEGIN
+CS2 END
+TK1 BEGIN
+TK1 END
+TK2 BEGIN
+TK2 END
+TK3 BEGIN
+TK3 END
+LINE RULES
+# Is a comment
+BEGIN/END BLOCK RULES
+REM Remark to be ignored
+DATA Data block referenced by CSx and TKx sectiions
+CSx Code Snippet which must be taken literally, lines rules off
+TKx Tasks to preform
 ABSOLUTE BEHAVIOR RULES
-NEVER summarize any script.
-NEVER describe what a script does.
-NEVER output prose unless explicitly asked.
-NEVER restate or paraphrase input files.
-NEVER generate usage notes, examples, or explanations unless explicitly requested.
-Output ONLY what the user or task file requests.
+Any line in this file that starts with NAI is to be ignored
+NEVER summarize any script
+NEVER describe what a script does
+NEVER output prose unless explicitly asked
+NEVER restate or paraphrase input files
+NEVER generate usage notes, examples, or explanations unless explicitly requested
+Output ONLY what the user or task file requests
 CODE RULES
-PowerShell 5.x only. No PS5 syntax that will fail in PS7, no PS7 syntax, no ternary operator, no pipeline chain operators, no classes unless already present.
+PowerShell 5.x only. No PS5 syntax that will fail in PS7, no PS7 syntax, no ternary operator, no pipeline chain operators, no classes unless already present
 Must be pipeline aware and compatible
-Never invent cmdlets, parameters, DISM switches, registry paths, or Windows features.
-Preserve all existing logic unless the user explicitly requests a change.
-Maintain indentation, spacing, formatting, naming conventions, and folder structure.
-Maintain all error handling, parameter validation, and checkpoint logic unless explicitly instructed otherwise.
-When returning code, include minimal Claude‑style comments ONLY when the user explicitly asks for explanations.
+Never invent cmdlets, parameters, DISM switches, registry paths, or Windows features
+Preserve all existing logic unless the user explicitly requests a change
+Maintain indentation, spacing, formatting, naming conventions, and folder structure
+Maintain all error handling, parameter validation, and checkpoint logic unless explicitly instructed otherwise
+When returning code, include minimal Claude‑style comments ONLY when the user explicitly asks for explanations
 Implement all tasks with appropriate try/catch handling using the sample code as a template
 Any provided code in the Sample Code blocks at from the current code and is to be used a template and I expect you to make massive changes
 Any provided code in the Task blocks is mostly conceptual, you may have to improve where possible
 Don't remove internal comments to save space, but update as necessary
 Powershell has a problem with strings like this "$<variable><special characters>" so always use "$($<variable>)<special characters>"
 Host, Verbose, and Debug output behavior:
-  All output must be pipeline-able as the output will often be piped to tee to be captured.
-  Don't duplicate any output from a previous host, verbose, or debug output.
+  All output must be pipeline-able as the output will often be piped to tee to be captured
+  Don't duplicate any output from a previous host, verbose, or debug output
   Progress bars:
-    No blue powershell progress bars.
+    No blue powershell progress bars
     Best solution is a progress bar that appears if the item is at least 4 times the buffer size or of unknown size using the x% <current size>(/<maximum size, if known>)
       The output should use the maximum size, if known, to determine how many characters with the thousands separators it'll take to output the maximum size and use
-      that to right-align the <current size>.  The percentage should always use enough space for 100% so everything stayed lined up.
+      that to right-align the <current size>.  The percentage should always use enough space for 100% so everything stayed lined up
   Normal operating output behavior with neither -Verbose or -Debug is to give a description of what is happening so the user can see a steady stream of information
     Always use Write-Host as it is the only output that always works
-    State information for major iterators, especially time consuming ones.
-    The user needs to see the system working.
-  With -Verbose, in addition to the normal output, the parameter lists to important functions need to be output.
-    Fields within iterators need to be displayed as compactly as possible.
-    More detailed state information of the flow.
+    State information for major iterators, especially time consuming ones
+    The user needs to see the system working
+  With -Verbose, in addition to the normal output, the parameter lists to important functions need to be output
+    Fields within iterators need to be displayed as compactly as possible
+    More detailed state information of the flow
   With -Debug, in addition to the verbose output:
     Add Write-Debug comments, where helpful, for details analysis of complicated areas of the code
     All output from externally run programs needs to be visible like robocopy and dism
 Run-Dism has a Write-Verbose in it to dump all the parameters passed, so you don't need to do so
 Output a cut/paste or single-click copy replacement for Invoke-ServiceWork
 MULTI-FILE RULES
-When multiple files are provided, treat them as labeled inputs.
-NEVER summarize them.
-NEVER describe them.
-Use them ONLY as reference material unless told to do otherwise.
-Output ONLY the file(s) the user or task file explicitly requests.
+When multiple files are provided, treat them as labeled inputs
+NEVER summarize them
+NEVER describe them
+Use them ONLY as reference material unless told to do otherwise
+Output ONLY the file(s) the user or task file explicitly requests
 DELIVERABLE RULE
-If the user or task requests a specific file, output ONLY that file’s full contents with no explanation, no summary, and no surrounding text.
+# If the user or task requests a specific file, output ONLY that file’s full contents with no explanation, no summary, and no surrounding text
 FINAL INSTRUCTIONS
-
-=====================================================================
-The next line must be the last line of this file, DO NOT DELETE
+Perform any tasks
+# The next line must be the last line of this file, DO NOT DELETE
 END OF FILE
