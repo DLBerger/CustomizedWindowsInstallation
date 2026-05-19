@@ -146,7 +146,7 @@ Implement all tasks with appropriate try/catch handling using the sample code as
 Any provided code in the Sample Code blocks at from the current code and is to be used a template and I expect you to make massive changes
 Any provided code in the Task blocks is mostly conceptual, you may have to improve where possible
 Don't remove internal comments to save space, but update as necessary
-Powershell has a problem with strings like this "$<variable><special characters>" so always use "$($<variable>)<special characters>" or "{0}<special characters>" -f $<variable>
+Powershell has a problem with strings like this "$<variable><special characters>" so always use "$($<variable>)<special characters>"
 Host, Verbose, and Debug output behavior:
   All output must be pipeline-able as the output will often be piped to tee to be captured.
   Don't duplicate any output from a previous host, verbose, or debug output.
