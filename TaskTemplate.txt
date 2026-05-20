@@ -155,6 +155,7 @@ Powershell has a problem with strings like this "$<variable><special characters>
 Host, Verbose, and Debug output behavior:
   All output must be pipeline-able as the output will often be piped to tee to be captured
   Don't duplicate any output from a previous host, verbose, or debug output
+  Don't use ';' in output as a thought separator, use ',' instead
   Progress bars:
     No blue powershell progress bars
     Best solution is a progress bar that appears if the item is at least 4 times the buffer size or of unknown size using the x% <current size>(/<maximum size, if known>)
