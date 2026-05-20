@@ -49,6 +49,10 @@ Apply downloaded KBs to the exported indices Wims\Serviced\.
 .PARAMETER Final
 Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\.
 
+.PARAMETER Prep
+Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
+Alias: -PrepDestISO
+
 .PARAMETER Drivers
 Export drivers into $WinpeDriver$.
 
@@ -58,15 +62,11 @@ Export registry keys.
 .PARAMETER Files
 Copy various .cmd, .ps1, and .ini files with transformations to customize them for the current folder structure and configuration.
 
-.PARAMETER Prep
-Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
-Alias: -PrepDestISO
-
 .PARAMETER CreateISO
 Create the final .iso from DestISO\Content\ using oscdimg.
 
 .PARAMETER All
-Shorthand for -Extract -Export -KB -Service -Final -Drivers -Reg -Files -Prep -CreateISO.
+Shorthand for -Extract -Export -KB -Service -Final -Prep -Drivers -Reg -Files -CreateISO.
 Default when no specific switch is provided.
 
 .PARAMETER Most
@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "091f33f"
+$GitHash = "f5f565d"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -248,8 +248,6 @@ $names = [ordered]@{
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
-    PrepJson              = 'prep.json'
-    FinalJson             = 'final.json'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -354,8 +352,8 @@ function Show-Usage {
   Write-Host "  -KB         Download OS and .NET updates" -ForegroundColor Gray
   Write-Host "  -Service    Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim" -ForegroundColor Gray
   Write-Host "  -Final      Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\" -ForegroundColor Gray
-  Write-Host "  -Files      Copy various .cmd, .ps1, and .ini files to the root of DestISO" -ForegroundColor Gray
   Write-Host "  -Prep       Prepare the destination ISO work area" -ForegroundColor Gray
+  Write-Host "  -Files      Copy various .cmd, .ps1, and .ini files to the root of DestISO" -ForegroundColor Gray
   Write-Host "  -CreateISO  Create the DestISO using oscdimg" -ForegroundColor Gray
   Write-Host "  -All        Shorthand for all work selections" -ForegroundColor Gray
   Write-Host "  -Most       Shorthand for all work selections except -CreateISO" -ForegroundColor Gray
@@ -447,8 +445,7 @@ function Stream-FileCopy {
     # VALIDATION
     # -----------------------------
     if (-not (Test-Path -Path $SourcePath -PathType Leaf)) {
-        Write-Host "Source file does not exist: $SourcePath"
-        return
+        throw "Stream-FileCopy source file does not exist: $SourcePath"
     }
 
     $destParent = Split-Path -Path $DestinationPath -Parent
@@ -2378,38 +2375,33 @@ function Invoke-FinalAssembly {
             return $true
         }
 
-        $finalMeta = Read-JsonFile -Path $finalJson
-        if (-not $finalMeta -or -not $finalMeta.FinalDate) {
-            Write-Host "Final JSON for $WimLabel unreadable, rebuilding"
+        try {
+            $finalMeta = Read-JsonFile -Path $finalJson
+            $finalDate = [datetime]::Parse($finalMeta.FinalDate)
+        }
+        catch {
+            Write-Host "Final JSON for $WimLabel invalid, rebuilding"
             return $true
         }
 
-        $finalDate = $null
-        try { $finalDate = [datetime]::Parse($finalMeta.FinalDate) } catch { return $true }
-
         $need = $false
-
         foreach ($img in $Images) {
             $idx = $img.Index
             $srv = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
             if (-not (Test-Path $srv)) {
-                throw "Missing serviced $WimLabel index $idx ($($img.Name))"
+                throw "Missing serviced $WimLabel index $idx ($($img.Name)), run -Service again"
             }
 
             $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
-            $meta    = Read-JsonFile -Path $srvJson
-            if (-not $meta -or -not $meta.ServicedDate) {
-                throw "$WimLabel index $idx ($($img.Name)) missing metadata, need to run -Service again"
-            }
-
             try {
+                $meta = Read-JsonFile -Path $srvJson
                 $sd = [datetime]::Parse($meta.ServicedDate)
                 if ($sd -gt $finalDate) {
                     Write-Host "$WimLabel index $idx ($($img.Name)) is newer than final"
                     $need = $true
                 }
             } catch {
-                throw "$WimLabel index $idx ($($img.Name)) date unreadable, need to run -Service again"
+                throw "$WimLabel index $idx ($($img.Name)) missing metadata or invalid, run -Service again"
             }
         }
 
@@ -2437,7 +2429,7 @@ function Invoke-FinalAssembly {
             $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
             $meta    = Read-JsonFile -Path $srvJson
             if (-not $meta -or -not $meta.ServicedDate) {
-                Write-Host "$WimLabel index $idx ($($img.Name)) missing metadata, need to run -Service again"
+                Write-Host "$WimLabel index $idx ($($img.Name)) missing metadata, run -Service again"
                 return
             }
 
@@ -2467,23 +2459,185 @@ function Invoke-FinalAssembly {
         Write-JsonFile -Path $finalJson -Data @{ FinalDate = (Get-Date -Format s) }
     }
 
+    $finishedInstallWim = $false
     if (Find-AnyOldServiced $InstallIndices $names.InstallWim) {
         Write-Host "Rebuilding final $($names.InstallWim)..."
         Build-FinalImage $InstallIndices $names.InstallWim $paths.InstallWimInFinal
     } else {
+        $finishedInstallWim = $true
         Write-Host "Final $($names.InstallWim) is up-to-date"
     }
 
+    $finishedBootWim = $false
     if (Find-AnyOldServiced $BootImages $names.BootWim) {
         Write-Host "Rebuilding final $($names.BootWim)..."
         Build-FinalImage $BootImages $names.BootWim $paths.BootWimInFinal
     } else {
+        $finishedBootWim = $true
         Write-Host "Final $($names.BootWim) is up-to-date"
     }
 
-    Write-Host "Final workflow complete"
+    if ($finishedInstallWim -and $finishedBootWim) {
+        Write-Host "Final workflow complete"
+    }
+    else {
+        Write-Warning "Final workflow incomplete"
+    }
 }
 
+# ==============================
+# Prep for the Destination ISO
+# ==============================
+
+function Invoke-PrepDestISO {
+    [CmdletBinding()]
+    param()
+
+    if ($Clean) {
+        Clean-Folder $paths.DestIsoRoot
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host "[DryRun] Would hardlink-copy $($paths.SrcIsoContent) -> $($paths.DestIsoContent)"
+        Write-Host "[DryRun] Would copy $($paths.InstallWimInFinal) -> $($paths.InstallWimInDest)"
+        Write-Host "[DryRun] Would copy $($paths.BootWimInFinal)    -> $($paths.BootWimInDest)"
+        return
+    }
+
+    Write-Host "Starting PrepDestISO workflow..."
+    Write-Verbose "Invoke-PrepDestISO: SrcIsoContent='$($paths.SrcIsoContent)' DestIsoContent='$($paths.DestIsoContent)'"
+
+    $installWim          = $names.InstallWim
+    $bootWim             = $names.bootWim
+    $extractJson         = $paths.ExtractJson
+    $finalInstallWimJson = Join-Path $paths.WimsFinal   ("final_{0}.json" -f $installWim)
+    $finalBootWimJson    = Join-Path $paths.WimsFinal   ("final_{0}.json" -f $bootWim)
+    $prepHardlinkJson    = Join-Path $paths.DestIsoRoot 'hardlink.json'
+    $prepInstallWimJson  = Join-Path $paths.DestIsoRoot ("prep_{0}.json" -f $installWim)
+    $prepBootWimJson     = Join-Path $paths.DestIsoRoot ("prep_{0}.json" -f $bootWim)
+
+    function Fetch-Date {
+        [CmdletBinding()]
+        param(
+            [string]$JsonPath, 
+            [string]$Step = ""
+        )
+        try {
+            $meta = Read-JsonFile -Path $JsonPath
+            $date = [datetime]::Parse($meta.Date)
+        }
+        catch {
+            if ([string]::IsNullOrEmpty($Path)) {
+                # Any date is never than this
+                return [datetime]::MinValue
+            } else {
+                throw "$JsonPath not found or invalid, run -$(Step) first"
+            }
+          
+        }
+        return $date
+    }
+
+    # Check our prerequites
+    # 1. Source folder for the ISO
+    $extractDate = Fetch-Date $extractJson 'Extract'
+    
+    # 2. Missing files
+    if (Report-Missing -Required @($finalInstallWimJson, $finalBootWimJson, $paths.InstallWimInFinal, $paths.BootWimInFinal)) {
+        throw "See above for missing file details, run -Final first"
+    }
+
+    # 3. Finalized install.wim and boot.wim
+    $finalInstallWimDate = Fetch-Date $finalInstallWimJson 'Final'
+    $finalBootWimDate    = Fetch-Date $finalBootWimJson 'Final'
+
+    # 4. Previous runs
+    $prepHardlinkDate    = Fetch-Date $prepHardlinkJson
+    $prepInstallWimDate  = Fetch-Date $prepInstallWimJson
+    $prepBootWimDate     = Fetch-Date $prepBootWimJson
+
+    # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
+    if ($prepHardlinkDate -le $extractDate) {
+        Write-Host "Hardlink-copying $($paths.SrcIsoContent) -> $($paths.DestIsoContent) (excluding install/boot images)..."
+
+        if (Test-Path $paths.DestIsoRoot) {
+            Write-Host "Removing existing DestIsoRoot..."
+            Remove-Folder $paths.DestIsoRoot
+        }
+        Ensure-Folder $paths.DestIsoContent
+
+        # ------------------------------------------------------------
+        # 1. Create all directories first (including empty ones)
+        # ------------------------------------------------------------
+        Write-Host "  Creating directories including empty ones..."
+        $allDirs = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -Directory -ErrorAction SilentlyContinue)
+        foreach ($dir in $allDirs) {
+            $rel  = $dir.FullName.Substring($paths.SrcIsoContent.TrimEnd('\').Length).TrimStart('\')
+            $dest = Join-Path $paths.DestIsoContent $rel
+            Ensure-Folder $dest
+        }
+
+        # ------------------------------------------------------------
+        # 2. Hardlink all files (excluding boot/install images)
+        # ------------------------------------------------------------
+        $excludeNames = @($names.BootWim, $names.InstallWim, $names.InstallEsd)
+        $allFiles = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -File -ErrorAction SilentlyContinue)
+        $total = $allFiles.Count
+        $done = 0
+        $lastPct = -1
+
+        Write-Host "  Hardlinking $total files..."
+        foreach ($file in $allFiles) {
+            $done++
+            $pct = [math]::Floor(($done / [math]::Max($total, 1)) * 100)
+            if ($pct -ge ($lastPct + 10)) {
+                Write-Host ("  {0,3}%  {1}/{2} files" -f $pct, $done, $total)
+                $lastPct = $pct - ($pct % 10)
+            }
+
+            if ($file.Name -in $excludeNames) { continue }
+
+            $rel  = $file.FullName.Substring($paths.SrcIsoContent.TrimEnd('\').Length).TrimStart('\')
+            $dest = Join-Path $paths.DestIsoContent $rel
+
+            Ensure-Folder (Split-Path $dest -Parent)
+
+            if (-not (Test-Path $dest)) {
+                try {
+                    New-Item -ItemType HardLink -Path $dest -Value $file.FullName -Force -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Warning "Hardlink failed for '$rel', copying: $_"
+                    Copy-Item -Path $file.FullName -Destination $dest -Force
+                }
+            }
+        }
+        Write-JsonFile -Path $prepHardlinkJson -Data @{ Date = (Get-Date -Format s) }
+        Write-Host "  Hardlink tree complete"
+    } else {
+        Write-Host "DestIsoContent hardlink-copy already current ($($prepHardlinkJson): $prepHardlinkDate)"
+    }
+
+    # ---- Step B: Copy final install.wim ----
+    if ($prepInstallWimDate -le $finalInstallWimDate) {
+        # Stream-FileCopy will tell us what it is doing
+        Stream-FileCopy $paths.InstallWimInFinal $paths.InstallWimInDest
+        Write-JsonFile -Path $prepInstallWimJson -Data @{ Date = (Get-Date -Format s) }
+    } else {
+        Write-Host "$($names.InstallWim) already current ($($prepInstallWimJson): $prepInstallWimDate)"
+    }
+
+    # ---- Step C: Copy final boot.wim ----
+    if ($prepBootWimDate -le $finalInstallWimDate) {
+        # Stream-FileCopy will tell us what it is doing
+        Stream-FileCopy $paths.BootWimInFinal $paths.BootWimInDest
+        Write-JsonFile -Path $prepBootWimJson -Data @{ Date = (Get-Date -Format s) }
+    } else {
+        Write-Host "$($names.InstallWim) already current ($($prepBootWimJson): $prepBootWimDate)"
+    }
+
+    Write-Host "PrepDestISO workflow complete"
+}
 # ==============================
 # Driver export
 # ==============================
@@ -2982,143 +3136,6 @@ function Invoke-FilesWork {
 }
 
 # ==============================
-# Prep for the Destination ISO
-# ==============================
-
-function Invoke-PrepDestISO {
-    [CmdletBinding()]
-    param()
-
-    if ($Clean) {
-        Clean-Folder $paths.DestIsoRoot
-        return
-    }
-
-    if ($DryRun) {
-        Write-Host "[DryRun] Would hardlink-copy $($paths.SrcIsoContent) -> $($paths.DestIsoContent)"
-        Write-Host "[DryRun] Would copy $($paths.InstallWimInFinal) -> $($paths.InstallWimInDest)"
-        Write-Host "[DryRun] Would copy $($paths.BootWimInFinal)    -> $($paths.BootWimInDest)"
-        return
-    }
-
-    Write-Host "Starting PrepDestISO workflow..."
-    Write-Verbose "Invoke-PrepDestISO: SrcIsoContent='$($paths.SrcIsoContent)' DestIsoContent='$($paths.DestIsoContent)'"
-
-    $extractJson = $paths.ExtractJson
-    $prepJson    = $paths.PrepJson
-    $finalJson   = $paths.FinalJson
-
-    $extractMeta = Read-JsonFile -Path $extractJson
-    if (-not $extractMeta) {
-        Write-Warning "$extractJson not found, run -Extract first"
-        return
-    }
-    $extractDate = [datetime]::Parse($extractMeta.Date)
-
-    $finalMeta = Read-JsonFile -Path $finalJson
-    $prep      = Read-JsonFile -Path $prepJson
-
-    # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
-    $needHardlink = (-not $prep -or -not $prep.HardlinkDate) -or
-                    ([datetime]::Parse($prep.HardlinkDate) -le $extractDate)
-
-    if ($needHardlink) {
-        Write-Host "Hardlink-copying $($paths.SrcIsoContent) -> $($paths.DestIsoContent) (excluding install/boot images)..."
-
-        if (Test-Path $paths.DestIsoRoot) {
-            Write-Host "Removing existing DestIsoRoot..."
-            Remove-Folder $paths.DestIsoRoot
-        }
-        Ensure-Folder $paths.DestIsoContent
-
-        # ------------------------------------------------------------
-        # 1. Create all directories first (including empty ones)
-        # ------------------------------------------------------------
-        $allDirs = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -Directory -ErrorAction SilentlyContinue)
-        foreach ($dir in $allDirs) {
-            $rel  = $dir.FullName.Substring($paths.SrcIsoContent.TrimEnd('\').Length).TrimStart('\')
-            $dest = Join-Path $paths.DestIsoContent $rel
-            Ensure-Folder $dest
-        }
-
-        # ------------------------------------------------------------
-        # 2. Hardlink all files (excluding boot/install images)
-        # ------------------------------------------------------------
-        $excludeNames = @($names.BootWim, $names.InstallWim, $names.InstallEsd)
-        $allFiles = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -File -ErrorAction SilentlyContinue)
-        $total = $allFiles.Count
-        $done = 0
-        $lastPct = -1
-
-        Write-Host "  Hardlinking $total files..."
-        foreach ($file in $allFiles) {
-            $done++
-            $pct = [math]::Floor(($done / [math]::Max($total, 1)) * 100)
-            if ($pct -ge ($lastPct + 10)) {
-                Write-Host ("  {0,3}%  {1}/{2} files" -f $pct, $done, $total)
-                $lastPct = $pct - ($pct % 10)
-            }
-
-            if ($file.Name -in $excludeNames) { continue }
-
-            $rel  = $file.FullName.Substring($paths.SrcIsoContent.TrimEnd('\').Length).TrimStart('\')
-            $dest = Join-Path $paths.DestIsoContent $rel
-
-            Ensure-Folder (Split-Path $dest -Parent)
-
-            if (-not (Test-Path $dest)) {
-                try {
-                    New-Item -ItemType HardLink -Path $dest -Value $file.FullName -Force -ErrorAction Stop | Out-Null
-                } catch {
-                    Write-Warning "Hardlink failed for '$rel', copying: $_"
-                    Copy-Item -Path $file.FullName -Destination $dest -Force
-                }
-            }
-        }
-        Write-Host "  Hardlink tree complete"
-
-        $prep = @{ HardlinkDate = (Get-Date -Format s) }
-        Write-JsonFile -Path $prepJson -Data $prep
-    } else {
-        Write-Host "DestIsoContent hardlink-copy already current ($($prepJson): $($prep.HardlinkDate))"
-    }
-
-    # ---- Step B: Copy final install.wim ----
-    $finalInstDate = if ($finalMeta -and $finalMeta.InstallWimDate) { [datetime]::Parse($finalMeta.InstallWimDate) } else { [datetime]::MinValue }
-    $destInstDate  = if ($prep.InstallWimDate) { [datetime]::Parse($prep.InstallWimDate) } else { [datetime]::MinValue }
-
-    if ((Test-Path $paths.InstallWimInFinal) -and ($destInstDate -le $finalInstDate)) {
-        # Stream-FileCopy will tell us what it is doing
-        Ensure-Folder (Split-Path $paths.InstallWimInDest -Parent)
-        Stream-FileCopy-Item $paths.InstallWimInFinal $paths.InstallWimInDest
-        $prep['InstallWimDate'] = (Get-Date -Format s)
-        Write-JsonFile -Path $prepJson -Data $prep
-    } elseif (Test-Path $paths.InstallWimInDest) {
-        Write-Host "$($names.InstallWim) already current ($($prepJson): $($prep.InstallWimDate))"
-    } else {
-        Write-Warning "Final $($names.InstallWim) not found at: $finalInstall (run -Final first)"
-    }
-
-    # ---- Step C: Copy final boot.wim ----
-    $finalBootDate = if ($finalMeta -and $finalMeta.BootWimDate) { [datetime]::Parse($finalMeta.BootWimDate) } else { [datetime]::MinValue }
-    $destBootDate  = if ($prep.BootWimDate) { [datetime]::Parse($prep.BootWimDate) } else { [datetime]::MinValue }
-
-    if ((Test-Path $paths.BootWimInFinal) -and ($destBootDate -le $finalBootDate)) {
-        # Stream-FileCopy will tell us what it is doing
-        Ensure-Folder (Split-Path $paths.BootWimInDest -Parent)
-        Stream-FileCopy-Item $paths.BootWimInFinal $paths.BootWimInDest
-        $prep['BootWimDate'] = (Get-Date -Format s)
-        Write-JsonFile -Path $prepJson -Data $prep
-    } elseif (Test-Path $paths.BootWimInDest) {
-        Write-Host "$($names.BootWim) already current ($($prepJson): $($prep.BootWimDate))"
-    } else {
-        Write-Warning "Final $($names.BootWim) not found at: $finalBoot (run -Final first)"
-    }
-
-    Write-Host "PrepDestISO workflow complete"
-}
-
-# ==============================
 # Create the Destination ISO
 # ==============================
 function Invoke-CreateISOWork {
@@ -3155,8 +3172,7 @@ function Invoke-CreateISOWork {
 
     # Sanity check for boot files before invoking oscdimg
     if (Report-Missing -Required @($paths.BIOSInDest, $paths.UEFIInDest)) {
-        Write-Warning "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
-        return
+        throw "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
     }
 
     $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
@@ -3258,7 +3274,6 @@ foreach ($u in $wimDirs) {
     $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
 }
 $paths.ExtractJson           = Join-Path $paths.SrcIsoRoot  $names.ExtractJson
-$paths.PrepJson              = Join-Path $paths.DestIsoRoot $names.PrepJson
 $paths.MetadataJson          = Join-Path $paths.WimsIndices $names.MetadataJson
 $paths.FinalJson             = Join-Path $paths.WimsFinal   $names.FinalJson
 $paths.InstallWimInFinal     = Join-Path $paths.WimsFinal   $names.InstallWim
@@ -3546,10 +3561,10 @@ try {
     if ($KB)        { Invoke-KBWork }
     if ($Service)   { Invoke-ServiceWork }
     if ($Final)     { Invoke-FinalAssembly }
+    if ($Prep)      { Invoke-PrepDestISO }
     if ($Drivers)   { Invoke-DriverWork }
     if ($Reg)       { Invoke-RegWork }
     if ($Files)     { Invoke-FilesWork }
-    if ($Prep)      { Invoke-PrepDestISO }
     if ($CreateISO) { Invoke-CreateISOWork }
 
     Write-Host "Completed"

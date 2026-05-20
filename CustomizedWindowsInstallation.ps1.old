@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "fb3550b"
+$GitHash = "f5f565d"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -1192,10 +1192,10 @@ function Invoke-Export {
     if (-not $wimMeta -or ($wimMeta.ISOPath -ne $ISO)) {
         # Locate source WIMs
         $installSrc = if     (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
-                    elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
-                    else   { $null }
+                      elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
+                      else   { $null }
         $bootSrc    = if     (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
-                    else { $null }
+                      else   { $null }
 
         if (-not $installSrc) {
             Write-Warning "Install image not found in $($paths.SourcesInSrc), run -Extract first"
@@ -2040,14 +2040,10 @@ function Test-MissingIndices {
     }
 
     # Anyone set an error message?
-    if ([string]::IsNullOrWhiteSpace($m)) {
-        # No problems found
-        return $false
+    if (-not [string]::IsNullOrWhiteSpace($m)) {
+        # Something is missing we're done
+        throw ("{0}, run with -Export -Clean first and then re-run" -f $m)
     }
-    
-    # Something is missing, warn and report it
-    Write-Warning ("{0}, run with -Export first" -f $m)
-    return $true
 }
 
 function Invoke-ServiceWork {
@@ -2055,6 +2051,7 @@ function Invoke-ServiceWork {
     param()
 
     if ($Clean) {
+        Clean-Folder $paths.WimsLogs
         Clean-Folder $paths.WimsMounts
         Clean-Folder $paths.WimsScratch
         Clean-Folder $paths.WimsServiced
@@ -2070,21 +2067,23 @@ function Invoke-ServiceWork {
     }
 
     Write-Host  "Starting Service workflow..."
+
+    # Sanity check our indices first
+    Test-MissingIndices
+
     Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
     Write-Debug   "Invoke-ServiceWork: KBsSSU='$($paths.KBsSSU)' KBsOSCU='$($paths.KBsOSCU)' WimsMounts='$($paths.WimsMounts)'"
 
-    $scratchDir = $paths.WimsScratch
-
-    # Sanity check our indices first
-    if (Test-MissingIndices) { return }
-
+    Remove-Folder $paths.WimsLogs
     Remove-Folder $paths.WimsMounts
     Remove-Folder $paths.WimsScratch
     Remove-Folder $paths.WimsServiced
-    Ensure-Folder $paths.WimsMounts
-    Ensure-Folder $paths.WimsServiced
-    Ensure-Folder $paths.WimsScratch
     Ensure-Folder $paths.WimsLogs
+    Ensure-Folder $paths.WimsMounts
+    Ensure-Folder $paths.WimsScratch
+    Ensure-Folder $paths.WimsServiced
+
+    $scratchDir = $paths.WimsScratch
 
     # Gather available packages (.msu and .cab)
     $ssuFiles = @(
@@ -2164,6 +2163,10 @@ function Invoke-ServiceWork {
                 $leaf     = Split-Path -Path $effectiveDest -Leaf
                 $safeLeaf = Protect-Token $leaf
                 $mountLog = Join-Path $paths.WimsLogs ("mount_{0}_{1}.log" -f $idxName, $safeLeaf)
+
+                # Clean the scratch directory to be safe
+                Remove-Folder $scratchDir
+                Ensure-Folder $scratchDir
 
                 Write-Host "  Mounting $effectiveDest -> $MountDir"
                 Run-Dism @(
@@ -2254,7 +2257,6 @@ function Invoke-ServiceWork {
         Write-Host    "  [Index $idx] $imgName"
         Write-Verbose "Service-Index: WimName='$WimName' Index=$idx IdxName='$IdxName' Name='$imgName' InstallType=$InstallType"
 
-        $imgDest   = Join-Path $paths.WimsIndices  $idxName
         $imgJson   = Join-Path $paths.WimsServiced ("{0}.json" -f $idxName)
         $imgExists = Read-JsonFile -Path $imgJson
 
@@ -2345,86 +2347,138 @@ function Invoke-FinalAssembly {
     }
 
     if ($DryRun) {
-        Write-Host "[DryRun] Would assemble final install.wim -> $($paths.InstallWimInDest)"
-        Write-Host "[DryRun] Would assemble final boot.wim   -> $($paths.BootWimInDest)"
+        Write-Host "[DryRun] Would assemble final $($names.InstallWim) -> $($paths.InstallWimInDest)"
+        Write-Host "[DryRun] Would assemble final $($names.BootWim)    -> $($paths.BootWimInDest)"
         return
     }
 
     Write-Host  "Starting Final Assembly workflow..."
-    Write-Verbose "Invoke-FinalAssembly: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
 
-    # Sanity check out indices first
-    if (Test-MissingIndices) { return }
+    # Sanity check our indices first
+    Test-MissingIndices
+
+    Write-Verbose "Invoke-FinalAssembly: WimsServiced='$($paths.WimsServiced)' WimsFinal='$($paths.WimsFinal)'"
 
     Ensure-Folder $paths.WimsServiced
     Ensure-Folder $paths.WimsFinal
 
-    # Build index lists for final assembly
-    $installIndexList = $InstallIndices | ForEach-Object { [int]$_.Index } | Sort-Object -Unique
-    $bootIndexList    = $BootImages     | ForEach-Object { [int]$_.Index } | Sort-Object -Unique
-
-    Write-Host "Install indices for final assembly: $($installIndexList -join ', ')"
-    Write-Host "Boot indices for final assembly   : $($bootIndexList -join ', ')"
-
-    # -----------------------------------------------------------------------
-    # Final assembly (serial compression can be slow)
-    # -----------------------------------------------------------------------
-    Write-Host "Final assembly: combining serviced indices (compression: $DismCompression) -> $($paths.WimsFinal)..."
-
-    $finalJson = $paths.FinalJson
-    $finalMeta = Read-JsonFile -Path $finalJson
-    if (-not $finalMeta) { $finalMeta = @{} }
-
-    function Invoke-AssembleWim {
+    function Find-AnyOldServiced {
+        [CmdletBinding()]
         param(
-            [string]   $WimLabel,    # display name for messages
-            [string]   $DestPath,    # final output file
-            [string[]] $Sources,     # per-index source WIM files (sorted)
-            [int[]]    $Indices,     # corresponding index numbers (for messages)
-            [string]   $DateKey      # key to stamp in $finalMeta on success
+            [Parameter(Mandatory=$true)]
+            [System.Object[]]$Images,
+
+            [Parameter(Mandatory=$true)]
+            [string]$WimLabel
         )
 
-        if ($Sources.Count -eq 0) { Write-Warning "No $WimLabel files found to assemble"; return }
-
-        $baseArgs = @('/Export-Image', "`"/DestinationImageFile:$DestPath`"", '/SourceIndex:1', "`"/Compress:$DismCompression`"", "/CheckIntegrity")
-        try {
-            Write-Host "Assembling final $WimLabel ($($Sources.Count) index/indices)..."
-            for ($i = 0; $i -lt $Sources.Count; $i++) {
-                Write-Host "  Index $($Indices[$i])..."
-                Run-Dism ($baseArgs + @("`"/SourceImageFile:$($Sources[$i])`"")) -Indent 2
-                if ($LASTEXITCODE -ne 0) { throw "DISM failed on $WimLabel index $($Indices[$i]) (exit $(& $Hex $LASTEXITCODE))" }
-            }
-            $finalMeta[$DateKey] = (Get-Date -Format s)
-            Write-JsonFile -Path $finalJson -Data $finalMeta
-            Write-Host "Final $WimLabel assembled"
-        } catch {
-            Write-Host "ERROR assembling final $($WimLabel): $_"
-            Remove-Folder $DestPath
+        $finalJson = Join-Path $paths.WimsFinal ("final_{0}.json" -f $WimLabel)
+        if (-not (Test-Path $finalJson)) {
+            Write-Host "Final JSON for $WimLabel not found, rebuilding"
+            return $true
         }
+
+        $finalMeta = Read-JsonFile -Path $finalJson
+        if (-not $finalMeta -or -not $finalMeta.FinalDate) {
+            Write-Host "Final JSON for $WimLabel unreadable, rebuilding"
+            return $true
+        }
+
+        $finalDate = $null
+        try { $finalDate = [datetime]::Parse($finalMeta.FinalDate) } catch { return $true }
+
+        $need = $false
+
+        foreach ($img in $Images) {
+            $idx = $img.Index
+            $srv = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
+            if (-not (Test-Path $srv)) {
+                throw "Missing serviced $WimLabel index $idx ($($img.Name))"
+            }
+
+            $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
+            $meta    = Read-JsonFile -Path $srvJson
+            if (-not $meta -or -not $meta.ServicedDate) {
+                throw "$WimLabel index $idx ($($img.Name)) missing metadata, need to run -Service again"
+            }
+
+            try {
+                $sd = [datetime]::Parse($meta.ServicedDate)
+                if ($sd -gt $finalDate) {
+                    Write-Host "$WimLabel index $idx ($($img.Name)) is newer than final"
+                    $need = $true
+                }
+            } catch {
+                throw "$WimLabel index $idx ($($img.Name)) date unreadable, need to run -Service again"
+            }
+        }
+
+        return $need
     }
 
-    # -- Assemble final install.wim --
-    if ($finalMeta.InstallWimDate) {
-        Write-Host "Final $($names.InstallWim) already assembled ($($finalMeta.InstallWimDate))"
-    } else {
-        $sortedInstallWims = @($installIndexList |
-            ForEach-Object { Join-Path $paths.WimsServiced ("{0}_{1}" -f $_, $names.InstallWim) } |
-            Where-Object   { Test-Path $_ })
-        Invoke-AssembleWim -WimLabel $names.InstallWim -DestPath $paths.InstallWimInFinal `
-                           -Sources $sortedInstallWims -Indices $installIndexList `
-                           -DateKey 'InstallWimDate'
+    function Build-FinalImage {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)]
+            [System.Object[]]$Images,
+
+            [Parameter(Mandatory=$true)]
+            [string]$WimLabel,
+
+            [Parameter(Mandatory=$true)]
+            [string]$DestPath
+        )
+
+        Remove-Folder $DestPath
+
+        foreach ($img in $Images) {
+            $idx = $img.Index
+
+            $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
+            $meta    = Read-JsonFile -Path $srvJson
+            if (-not $meta -or -not $meta.ServicedDate) {
+                Write-Host "$WimLabel index $idx ($($img.Name)) missing metadata, need to run -Service again"
+                return
+            }
+
+            $src = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
+            if (-not (Test-Path $src)) {
+                Write-Host "Missing serviced source for $WimLabel index $idx"
+                return
+            }
+
+            $baseArgs = @(
+                '/Export-Image',
+                "`"/DestinationImageFile:$DestPath`"",
+                '/SourceIndex:1',
+                "`"/Compress:$DismCompression`"",
+                '/CheckIntegrity'
+            )
+
+            Write-Host "  Adding $WimLabel index $idx from $src"
+            Run-Dism ($baseArgs + @("`"/SourceImageFile:$src`"")) -Indent 2
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "ERROR exporting $WimLabel index $idx"
+                return
+            }
+        }
+
+        $finalJson = Join-Path $paths.WimsFinal ("final_{0}.json" -f $WimLabel)
+        Write-JsonFile -Path $finalJson -Data @{ FinalDate = (Get-Date -Format s) }
     }
 
-    # -- Assemble final boot.wim --
-    if ($finalMeta.BootWimDate) {
-        Write-Host "Final $($names.BootWim) already assembled ($($finalMeta.BootWimDate))"
+    if (Find-AnyOldServiced $InstallIndices $names.InstallWim) {
+        Write-Host "Rebuilding final $($names.InstallWim)..."
+        Build-FinalImage $InstallIndices $names.InstallWim $paths.InstallWimInFinal
     } else {
-        $sortedBootWims = @($bootIndexList |
-            ForEach-Object { Join-Path $paths.WimsServiced ("{0}_{1}" -f $_, $names.BootWim) } |
-            Where-Object   { Test-Path $_ })
-        Invoke-AssembleWim -WimLabel $names.BootWim -DestPath $paths.BootWimInFinal `
-                           -Sources $sortedBootWims -Indices $bootIndexList `
-                           -DateKey 'BootWimDate'
+        Write-Host "Final $($names.InstallWim) is up-to-date"
+    }
+
+    if (Find-AnyOldServiced $BootImages $names.BootWim) {
+        Write-Host "Rebuilding final $($names.BootWim)..."
+        Build-FinalImage $BootImages $names.BootWim $paths.BootWimInFinal
+    } else {
+        Write-Host "Final $($names.BootWim) is up-to-date"
     }
 
     Write-Host "Final workflow complete"
@@ -2918,8 +2972,8 @@ function Invoke-FilesWork {
     [CmdletBinding()]
     param()
 
-    Write-Host "Starting Files workflow..."
 <#
+    Write-Host "Starting Files workflow..."
     Write-InstallDriversCmd
     Write-InstallRegsCmd
     Write-SetupConfigFiles
@@ -2992,7 +3046,9 @@ function Invoke-PrepDestISO {
         # ------------------------------------------------------------
         $excludeNames = @($names.BootWim, $names.InstallWim, $names.InstallEsd)
         $allFiles = @(Get-ChildItem -Path $paths.SrcIsoContent -Recurse -File -ErrorAction SilentlyContinue)
-        $total = $allFiles.Count; $done = 0; $lastPct = -1
+        $total = $allFiles.Count
+        $done = 0
+        $lastPct = -1
 
         Write-Host "  Hardlinking $total files..."
         foreach ($file in $allFiles) {
@@ -3262,22 +3318,29 @@ if (-not $DryRun -and -not $Clean) {
         if (-not $Arch)    { $Arch    = $Meta.Arch }
     }
     function Try-WimMetadata {
-        param([string]$InstallWimPath, [string]$BootWimPath, [string]$From)
-        Write-Verbose "Reading metadata from $($From): $InstallWimPath and $BootWimPath"
-        try {
-            $metaInstall = Get-WimMetadata -WimPath $InstallWimPath
-            $metaBoot    = Get-WimMetadata -WimPath $BootWimPath
-            if ($metaInstall.InstallImages.Count -gt 0) {
-                $InstallImages = @($metaInstall.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-                Apply-WimMetadata $metaInstall
+        param([string]$InstallWimPath, [string]$InstallEsdPath, [string]$BootWimPath, [string]$From)
+        $installWim = if     (Test-Path $InstallWimPath) { $InstallWimPath }
+                      elseif (Test-Path $InstallEsdPath) { $InstallEsdPath }
+                      else   { $null }
+        $bootWim    = if     (Test-Path $BootWimPath)    { $BootWimPath }
+                      else   { $null }
+        if ($installWim -and $bootWim) {
+            Write-Verbose "Reading metadata from $($From): $InstallWimPath and $BootWimPath"
+            try {
+                $metaInstall = Get-WimMetadata -WimPath $InstallWimPath
+                $metaBoot    = Get-WimMetadata -WimPath $BootWimPath
+                if ($metaInstall.InstallImages.Count -gt 0) {
+                    $InstallImages = @($metaInstall.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                    Apply-WimMetadata $metaInstall
+                }
+                if ($metaBoot.BootImages.Count -gt 0) {
+                    $BootImages = @($metaBoot.BootImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                }
+            } catch {
+                Write-Warning "Failed to read WIM metadata from '$From': $_"
             }
-            if ($metaBoot.BootImages.Count -gt 0) {
-                $BootImages = @($metaBoot.BootImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-            }
-        } catch {
-            Write-Warning "Failed to read WIM metadata from '$From': $_"
+            if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $metaSrc = $From }
         }
-        if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $metaSrc = $From }
     }
 
     # 1) Prefer cached MetadataJson if it matches the current ISO
@@ -3293,14 +3356,10 @@ if (-not $DryRun -and -not $Clean) {
 
     # 2) Fall back to SrcIsoContent on disk
     if (-not $isoMetaResolved -and (Test-Path $paths.SourcesInSrc)) {
-        $installWim = if     (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
-                      elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
-                      else   { $null }
-        $bootWim    = if     (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
-                      else   { $null }
-        if ($installWim -and $bootWim) {
-            Try-WimMetadata -InstallWimPath $installWim -BootWimPath $bootWim -From "SrcIsoContent"
-        }
+        Try-WimMetadata -InstallWimPath $paths.InstallWimInSrc `
+                        -InstallEsdPath $paths.InstallEsdInSrc `
+                        -BootWimPath $paths.BootWimInSrc `
+                        -From "SrcIsoContent"
     }
 
     # 3) Mount the ISO briefly if still needed
@@ -3317,17 +3376,13 @@ if (-not $DryRun -and -not $Clean) {
             if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
 
             $metaDrive = $vol.DriveLetter + ':\'
-            $installWim  = if     (Test-Path "$metaDrive$($paths.InstallWimInIso)") { "$metaDrive$($paths.InstallWimInIso)" }
-                           elseif (Test-Path "$metaDrive$($paths.InstallEsdInIso)") { "$metaDrive$($paths.InstallEsdInIso)" }
-                           else   { $null }
-            $installBoot = if     (Test-Path "$metaDrive$($paths.BootWimInIso)") { "$metaDrive$($paths.BootWimInIso)" }
-                           else   { $null }
-            if ($installWim -and $installBoot) {
-                Try-WimMetadata -InstallWimPath $installWim -BootWimPath $bootWim -From "mounted ISO"
-            }
+            Try-WimMetadata -InstallWimPath "$metaDrive$($paths.InstallWimInIso)" `
+                            -InstallEsdPath "$metaDrive$($paths.InstallEsdInIso)" `
+                            -BootWimPath    "$metaDrive$($paths.BootWimInIso)" `
+                            -From "SrcIsoContent"
         } finally {
             if ($metaDiskImg -and $metaDiskImg.Attached) {
-                Write-Host "Cleanup: dismounting ISO..."
+                Write-Verbose "Dismounting ISO..."
                 Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
             }
         }
@@ -3373,10 +3428,11 @@ if ($Extract)   { $workSwitches += 'Extract' }
 if ($Export)    { $workSwitches += 'Export' }
 if ($KB)        { $workSwitches += 'KB' }
 if ($Service)   { $workSwitches += 'Service' }
+if ($Final)     { $workSwitches += 'Final' }
+if ($Prep)      { $workSwitches += 'Prep' }
+if ($Files)     { $workSwitches += 'Files' }
 if ($Drivers)   { $workSwitches += 'Drivers' }
 if ($Reg)       { $workSwitches += 'Reg' }
-if ($Files)     { $workSwitches += 'Files' }
-if ($Prep)      { $workSwitches += 'Prep' }
 if ($CreateISO) { $workSwitches += 'CreateISO' }
 
 if ($All -or $Most -or (-not $workSwitches)) {
@@ -3384,10 +3440,11 @@ if ($All -or $Most -or (-not $workSwitches)) {
     $Export  = $true
     $KB      = $true
     $Service = $true
+    $Final   = $true
+    $Prep    = $true
+    $Files   = $true
     $Drivers = $true
     $Reg     = $true
-    $Files   = $true
-    $Prep    = $true
     if ($Most) {
         $workSwitches = @('Most')
     } else {
