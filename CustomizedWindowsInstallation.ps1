@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "684e1de"
+$GitHash = "0177f04"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -2459,30 +2459,21 @@ function Invoke-FinalAssembly {
         Write-JsonFile -Path $finalJson -Data @{ Date = (Get-Date -Format s) }
     }
 
-    $finishedInstallWim = $false
     if (Find-AnyOldServiced $InstallIndices $names.InstallWim) {
         Write-Host "Rebuilding final $($names.InstallWim)..."
         Build-FinalImage $InstallIndices $names.InstallWim $paths.InstallWimInFinal
     } else {
-        $finishedInstallWim = $true
         Write-Host "Final $($names.InstallWim) is up-to-date"
     }
 
-    $finishedBootWim = $false
     if (Find-AnyOldServiced $BootImages $names.BootWim) {
         Write-Host "Rebuilding final $($names.BootWim)..."
         Build-FinalImage $BootImages $names.BootWim $paths.BootWimInFinal
     } else {
-        $finishedBootWim = $true
         Write-Host "Final $($names.BootWim) is up-to-date"
     }
 
-    if ($finishedInstallWim -and $finishedBootWim) {
-        Write-Host "Final workflow complete"
-    }
-    else {
-        Write-Warning "Final workflow incomplete"
-    }
+    Write-Host "Final workflow complete"
 }
 
 # ==============================
@@ -2633,7 +2624,7 @@ function Invoke-PrepDestISO {
         Stream-FileCopy $paths.BootWimInFinal $paths.BootWimInDest
         Write-JsonFile -Path $prepBootWimJson -Data @{ Date = (Get-Date -Format s) }
     } else {
-        Write-Host "$($names.InstallWim) already current ($($prepBootWimJson): $prepBootWimDate)"
+        Write-Host "$($names.BootWim) already current ($($prepBootWimJson): $prepBootWimDate)"
     }
 
     Write-Host "PrepDestISO workflow complete"
