@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "f5f565d"
+$GitHash = "684e1de"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -2377,7 +2377,7 @@ function Invoke-FinalAssembly {
 
         try {
             $finalMeta = Read-JsonFile -Path $finalJson
-            $finalDate = [datetime]::Parse($finalMeta.FinalDate)
+            $finalDate = [datetime]::Parse($finalMeta.Date)
         }
         catch {
             Write-Host "Final JSON for $WimLabel invalid, rebuilding"
@@ -2456,7 +2456,7 @@ function Invoke-FinalAssembly {
         }
 
         $finalJson = Join-Path $paths.WimsFinal ("final_{0}.json" -f $WimLabel)
-        Write-JsonFile -Path $finalJson -Data @{ FinalDate = (Get-Date -Format s) }
+        Write-JsonFile -Path $finalJson -Data @{ Date = (Get-Date -Format s) }
     }
 
     $finishedInstallWim = $false
