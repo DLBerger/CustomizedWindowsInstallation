@@ -1,8 +1,28 @@
 BEGINNING OF FILE
 RESET TASK CONTEXT
-If you don't see a corresponding END OF FILE at the very end of this,
-then you don't have the complete information, you shall fail immediately
+If you do not see a corresponding END OF FILE at the very end of this,
+then you do not have the complete information, you shall fail immediately
 and report the failure
+
+GLOBAL RULES
+# - Process sections strictly in the order they appear in the file
+# - Execution order is DATA then CS blocks then TK blocks then FINAL INSTRUCTIONS
+# - TK blocks override CS blocks and run in numeric order TK1 then TK2 then TK3
+# - Empty CS and TK blocks are ignored
+# - RESET TASK CONTEXT must be the first non comment line and anywhere else is failure
+# - END OF FILE must be present or the task fails immediately
+# - All output must be ASCII unless explicitly stated otherwise
+# - Never summarize describe paraphrase or explain scripts
+# - PowerShell 5.x only and no PS7 syntax and no ternary operator and no pipeline chain operators
+# - Maintain formatting indentation naming and logic as best you can
+# - Use "$($var)" when concatenating special characters
+# - Host Verbose and Debug output must follow pipeline safe rules
+# - No blue PowerShell progress bars and use textual progress only
+# - In generated code comma preferred over semicolon in strings except as required
+# - User Override Rule
+#     The user may explicitly override any rule by stating
+#         Override rule: <rule description>
+#     If an override conflicts with any other rule then the override rule wins
 DATA BEGIN
 $names = [ordered]@{
     SrcIso                = 'SrcISO'
@@ -71,6 +91,7 @@ $names.RequiredTransforms = @(
         @("$RegistryRoot = 'Registry'", $names.Registry)
     ))
 )
+
 $paths = [ordered]@{}
 $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
 $paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
@@ -124,64 +145,9 @@ TK2 BEGIN
 TK2 END
 TK3 BEGIN
 TK3 END
-LINE RULES
-# Is a comment
-BEGIN/END BLOCK RULES
-REM Remark to be ignored
-DATA Data block referenced by CSx and TKx sectiions
-CSx Code Snippet which must be taken literally, lines rules off
-TKx Tasks to preform
-ABSOLUTE BEHAVIOR RULES
-Any line in this file that starts with NAI is to be ignored
-NEVER summarize any script
-NEVER describe what a script does
-NEVER output prose unless explicitly asked
-NEVER restate or paraphrase input files
-NEVER generate usage notes, examples, or explanations unless explicitly requested
-Output ONLY what the user or task file requests
-CODE RULES
-PowerShell 5.x only. No PS5 syntax that will fail in PS7, no PS7 syntax, no ternary operator, no pipeline chain operators, no classes unless already present
-Must be pipeline aware and compatible
-Never invent cmdlets, parameters, DISM switches, registry paths, or Windows features
-Preserve all existing logic unless the user explicitly requests a change
-Maintain indentation, spacing, formatting, naming conventions, and folder structure
-Maintain all error handling, parameter validation, and checkpoint logic unless explicitly instructed otherwise
-When returning code, include minimal Claude‑style comments ONLY when the user explicitly asks for explanations
-Implement all tasks with appropriate try/catch handling using the sample code as a template
-Any provided code in the Sample Code blocks at from the current code and is to be used a template and I expect you to make massive changes
-Any provided code in the Task blocks is mostly conceptual, you may have to improve where possible
-Don't remove internal comments to save space, but update as necessary
-Powershell has a problem with strings like this "$<variable><special characters>" so always use "$($<variable>)<special characters>"
-Host, Verbose, and Debug output behavior:
-  All output must be pipeline-able as the output will often be piped to tee to be captured
-  Don't duplicate any output from a previous host, verbose, or debug output
-  Don't use ';' in output as a thought separator, use ',' instead
-  Progress bars:
-    No blue powershell progress bars
-    Best solution is a progress bar that appears if the item is at least 4 times the buffer size or of unknown size using the x% <current size>(/<maximum size, if known>)
-      The output should use the maximum size, if known, to determine how many characters with the thousands separators it'll take to output the maximum size and use
-      that to right-align the <current size>.  The percentage should always use enough space for 100% so everything stayed lined up
-  Normal operating output behavior with neither -Verbose or -Debug is to give a description of what is happening so the user can see a steady stream of information
-    Always use Write-Host as it is the only output that always works
-    State information for major iterators, especially time consuming ones
-    The user needs to see the system working
-  With -Verbose, in addition to the normal output, the parameter lists to important functions need to be output
-    Fields within iterators need to be displayed as compactly as possible
-    More detailed state information of the flow
-  With -Debug, in addition to the verbose output:
-    Add Write-Debug comments, where helpful, for details analysis of complicated areas of the code
-    All output from externally run programs needs to be visible like robocopy and dism
-Run-Dism has a Write-Verbose in it to dump all the parameters passed, so you don't need to do so
-Output a cut/paste or single-click copy replacement for Invoke-ServiceWork
-MULTI-FILE RULES
-When multiple files are provided, treat them as labeled inputs
-NEVER summarize them
-NEVER describe them
-Use them ONLY as reference material unless told to do otherwise
-Output ONLY the file(s) the user or task file explicitly requests
-DELIVERABLE RULE
-# If the user or task requests a specific file, output ONLY that file’s full contents with no explanation, no summary, and no surrounding text
 FINAL INSTRUCTIONS
-Perform any tasks
-# The next line must be the last line of this file, DO NOT DELETE
+# Perform any tasks
+# OUTPUT FILE directive must specify exactly one file to output
+
+# The next line must be the last line of this file DO NOT DELETE
 END OF FILE
