@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "0177f04"
+$GitHash = "8d2e299"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -236,6 +236,7 @@ $names = [ordered]@{
     WinreWim              = 'winre.wim'
     BootFileBIOS          = 'boot\etfsboot.com'
     BootFileUEFI          = 'efi\microsoft\boot\efisys.bin'
+    SetupExe              = 'setup.exe'
     ExportDriversCmd      = 'ExportDrivers.cmd'
     InstallDriversCmd     = 'InstallDrivers.cmd'
     ExportRegsCmd         = 'ExportRegs.cmd'
@@ -2369,7 +2370,7 @@ function Invoke-FinalAssembly {
             [string]$WimLabel
         )
 
-        $finalJson = Join-Path $paths.WimsFinal ("final_{0}.json" -f $WimLabel)
+        $finalJson = Join-Path $paths.WimsFinal ("{0}.json" -f $WimLabel)
         if (-not (Test-Path $finalJson)) {
             Write-Host "Final JSON for $WimLabel not found, rebuilding"
             return $true
@@ -2455,7 +2456,7 @@ function Invoke-FinalAssembly {
             }
         }
 
-        $finalJson = Join-Path $paths.WimsFinal ("final_{0}.json" -f $WimLabel)
+        $finalJson = Join-Path $paths.WimsFinal ("{0}.json" -f $WimLabel)
         Write-JsonFile -Path $finalJson -Data @{ Date = (Get-Date -Format s) }
     }
 
@@ -2502,11 +2503,11 @@ function Invoke-PrepDestISO {
     $installWim          = $names.InstallWim
     $bootWim             = $names.bootWim
     $extractJson         = $paths.ExtractJson
-    $finalInstallWimJson = Join-Path $paths.WimsFinal   ("final_{0}.json" -f $installWim)
-    $finalBootWimJson    = Join-Path $paths.WimsFinal   ("final_{0}.json" -f $bootWim)
+    $finalInstallWimJson = Join-Path $paths.WimsFinal   ("{0}.json" -f $installWim)
+    $finalBootWimJson    = Join-Path $paths.WimsFinal   ("{0}.json" -f $bootWim)
     $prepHardlinkJson    = Join-Path $paths.DestIsoRoot 'hardlink.json'
-    $prepInstallWimJson  = Join-Path $paths.DestIsoRoot ("prep_{0}.json" -f $installWim)
-    $prepBootWimJson     = Join-Path $paths.DestIsoRoot ("prep_{0}.json" -f $bootWim)
+    $prepInstallWimJson  = Join-Path $paths.DestIsoRoot ("{0}.json" -f $installWim)
+    $prepBootWimJson     = Join-Path $paths.DestIsoRoot ("{0}.json" -f $bootWim)
 
     function Fetch-Date {
         [CmdletBinding()]
@@ -2543,18 +2544,15 @@ function Invoke-PrepDestISO {
     $finalInstallWimDate = Fetch-Date $finalInstallWimJson 'Final'
     $finalBootWimDate    = Fetch-Date $finalBootWimJson 'Final'
 
-    # 4. Previous runs
-    $prepHardlinkDate    = Fetch-Date $prepHardlinkJson
-    $prepInstallWimDate  = Fetch-Date $prepInstallWimJson
-    $prepBootWimDate     = Fetch-Date $prepBootWimJson
-
     # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
+    $prepHardlinkDate = Fetch-Date $prepHardlinkJson
     if ($prepHardlinkDate -le $extractDate) {
         Write-Host "Hardlink-copying $($paths.SrcIsoContent) -> $($paths.DestIsoContent) (excluding install/boot images)..."
 
         if (Test-Path $paths.DestIsoRoot) {
             Write-Host "Removing existing DestIsoRoot..."
             Remove-Folder $paths.DestIsoRoot
+            Ensure-Folder $paths.DestIsoRoot
         }
         Ensure-Folder $paths.DestIsoContent
 
@@ -2610,6 +2608,7 @@ function Invoke-PrepDestISO {
     }
 
     # ---- Step B: Copy final install.wim ----
+    $prepInstallWimDate = Fetch-Date $prepInstallWimJson
     if ($prepInstallWimDate -le $finalInstallWimDate) {
         # Stream-FileCopy will tell us what it is doing
         Stream-FileCopy $paths.InstallWimInFinal $paths.InstallWimInDest
@@ -2619,6 +2618,7 @@ function Invoke-PrepDestISO {
     }
 
     # ---- Step C: Copy final boot.wim ----
+    $prepBootWimDate = Fetch-Date $prepBootWimJson
     if ($prepBootWimDate -le $finalInstallWimDate) {
         # Stream-FileCopy will tell us what it is doing
         Stream-FileCopy $paths.BootWimInFinal $paths.BootWimInDest
@@ -3130,6 +3130,7 @@ function Invoke-FilesWork {
 # Create the Destination ISO
 # ==============================
 function Invoke-CreateISOWork {
+
     if ($Clean) {
         Clean-File $DestISO
         return
@@ -3142,15 +3143,7 @@ function Invoke-CreateISOWork {
     }
 
     Write-Host "Starting CreateISO workflow..."
-    Write-Verbose "Invoke-CreateISOWork: DestIsoContent='$($paths.DestIsoContent)' DestISO='$DestISO'"
-
-    # Depends on prep.json, fail if DestISO content has not been prepared
-    $prepJson = $paths.PrepJson
-    $prepMeta = Read-JsonFile -Path $prepJson
-    if (-not $prepMeta) {
-        Write-Warning "$prepJson not found, run -Prep first to prepare the destination ISO content"
-        return
-    }
+    Write-Verbose ("Invoke-CreateISOWork: DestIsoContent='{0}' DestISO='{1}'" -f $paths.DestIsoContent, $DestISO)
 
     if (-not $oscdimgExe) {
         Write-Warning "oscdimg.exe not found, install Windows ADK or specify -oscdimg"
@@ -3160,34 +3153,119 @@ function Invoke-CreateISOWork {
         Write-Warning "DestISO path is not set, use -DestISO or -ISO is provided"
         return
     }
+    
+    # Needed for the boot data
+    $etfs = $paths.BIOSInDest
+    $efis = $paths.UEFIInDest
 
-    # Sanity check for boot files before invoking oscdimg
-    if (Report-Missing -Required @($paths.BIOSInDest, $paths.UEFIInDest)) {
+    # Required boot files
+    $required = @(
+        $etfs
+        $efis
+        $paths.SetupExeInDest
+        $paths.SourcesInDest
+        $paths.BootWimInDest
+        $paths.InstallWimInDest
+    )
+    if (Report-Missing -Required $required) {
         throw "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
     }
 
     $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
 
-    $oscdimgArgsLiteral = @"
--m                  # Ignore size limits
--o                  # Optimize duplicate files
--u2                 # UTF-8 filenames
--udfver102          # UDF 1.02 for max compatibility
--l$IsoVolumeLabel   # Volume label
--bootdata:$bootdata # BIOS+UEFI boot entries
-"$($paths.DestIsoContent)"
-"$DestISO"
-"@
+    # Build argument list for oscdimg
+    $oscdimgArgs = @(
+        "-o"                        # Optimize duplicate files
+        "-u2"                       # UTF-8 filenames
+        "-udfver102"                # UDF 1.02 for compatibility
+        "-l$IsoVolumeLabel"         # Volume label
+        "-bootdata:$bootdata"       # BIOS and UEFI boot entries
+        $paths.DestIsoContent       # Source folder
+        $DestISO                    # Output ISO
+    )
 
     Write-Host "Building ISO: $DestISO"
-    Write-Verbose ("& {0} --% {1}" -f $oscdimgExe, ($oscdimgArgsLiteral -replace '\r?\n',' '))
+    Write-Verbose ("& {0} {1}" -f $oscdimgExe, ($oscdimgArgs -join ' '))
 
-    & $oscdimgExe --% $oscdimgArgsLiteral
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: oscdimg failed to build ISO (exit $(& $Hex $LASTEXITCODE))"
+    # Build process start info
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $oscdimgExe
+    $psi.Arguments = ($oscdimgArgs -join " ")
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+
+    # Track last printed line to avoid duplicates
+    $script:lastLine = ""
+
+    # Track next 10 percent mark
+    $script:nextMark = [int]10
+
+    # Unified line handler
+    function Handle-Line {
+        param([string]$line)
+
+        if (-not $line)                 { return }
+        if ($line -eq $script:lastLine) { return }
+
+        $script:lastLine = $line
+
+        # Case 1: Mixed line with prefix + percent, just output the prefix
+        if ($line -match "^(\S.*\S)\s+(\d+)% complete$") {
+            Write-Host $matches[1]
+            return
+        }
+
+        # Case 2: Pure progress line
+        if ($line -match "^\s*(\d+)% complete$") {
+            $pct = [int]$matches[1]
+            if ($pct -lt $script:nextMark) { return }
+            Write-Host ("Progress: {0}%" -f $pct)
+            $script:nextMark += 10
+            return
+        }
+
+        # Case 3: Normal output (optimization lines, copyright, etc.)
+        Write-Host $line
+    }
+
+    # Real-time unified non-blocking read loop
+    while (-not $proc.HasExited) {
+
+        # stdout available?
+        if ($proc.StandardOutput.Peek() -ne -1) {
+            Handle-Line ($proc.StandardOutput.ReadLine())
+        }
+
+        # stderr available?
+        if ($proc.StandardError.Peek() -ne -1) {
+            Handle-Line ($proc.StandardError.ReadLine())
+        }
+
+        Start-Sleep -Milliseconds 20
+    }
+
+    # Flush remaining lines after exit
+    while ($proc.StandardOutput.Peek() -ne -1) {
+        Handle-Line ($proc.StandardOutput.ReadLine())
+    }
+    while ($proc.StandardError.Peek() -ne -1) {
+        Handle-Line ($proc.StandardError.ReadLine())
+    }
+
+    $proc.WaitForExit()
+
+    if ($proc.ExitCode -ne 0) {
+        Write-Host ("ERROR: oscdimg failed to build ISO (exit {0})" -f (& $Hex $proc.ExitCode))
         return
     }
+
     Write-Host "Created ISO: $DestISO"
 }
 
@@ -3244,6 +3322,7 @@ $paths.DestIsoRoot           = Join-Path $Folder $names.DestIso
 $paths.DestIsoContent        = Join-Path $paths.DestIsoRoot $names.Content
 $paths.BIOSInDest            = Join-Path $paths.DestIsoContent $names.BootFileBIOS
 $paths.UEFIInDest            = Join-Path $paths.DestIsoContent $names.BootFileUEFI
+$paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
