@@ -207,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "8d2e299"
+$GitHash = "c66b696"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -3117,13 +3117,47 @@ function Invoke-FilesWork {
     [CmdletBinding()]
     param()
 
-<#
     Write-Host "Starting Files workflow..."
-    Write-InstallDriversCmd
-    Write-InstallRegsCmd
-    Write-SetupConfigFiles
-    Write-SetupCmdFiles
-#>
+
+    $requiredFiles = $(
+        $names.ExportDriversCmd
+        $names.InstallDriversCmd
+        $names.ExportRegsCmd
+        $names.ExportRegsPs1
+        $names.InstallRegsCmd
+        $names.SetupConfigCleanIni
+        $names.SetupConfigUpgradeIni
+        $names.CleanInstallCmd
+        $names.UpgradeCmd
+    )
+
+    $requiredFolders = $(
+        $paths.WinpeDriverRoot
+        $paths.RegistryRoot
+    )
+
+    $From = $Folder
+    $To   = $paths.DestIsoContent
+
+    $requiredFrom = foreach ($u in $requiredFiles) { Join-Path $From $u }
+    $requiredTo   = foreach ($u in $requiredFiles) { Join-Path $To   $u }
+
+    if (Report-Missing -Required $requiredFrom) {
+        throw "Boot files are missing from $From"
+    }
+
+    if ($Clean) {
+        foreach ($c in $requiredFolders) { Clean-Folder $c }
+        foreach ($c in $requiredTo)      { Clean-File $c }
+    } elseif ($DryRun) {
+        foreach ($d in $requiredFolders) { Write-Host "[DryRun] Would create: $d" }
+        foreach ($d in $requiredTo)      { Write-Host "[DryRun] Would write: $d" }
+    } else {
+        foreach ($f in $requiredFolders) { Ensure-Folder $f }
+        foreach ($f in $requiredFiles) { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To $f) }
+    }
+
+    Write-Host "Files workflow complete"
 }
 
 # ==============================
@@ -3326,14 +3360,8 @@ $paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
-$paths.RegistryRoot          = Join-Path $Folder $names.Registry
-$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
-$paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
-$paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
-$paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
-$paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
-$paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
+$paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
+$paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
 $paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
