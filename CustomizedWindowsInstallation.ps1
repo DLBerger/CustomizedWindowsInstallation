@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "019fe0e"
+$GitHash = "6f3b23f"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -454,8 +454,26 @@ function Stream-FileCopy {
         [string]$SourcePath,
 
         [Parameter(Mandatory = $true)]
-        [string]$DestinationPath
+        [string]$DestinationPath,
+
+        [Parameter(Mandatory = $false)]
+        [int64]$CopiedBytes = 0,
+
+        [Parameter(Mandatory = $false)]
+        [int64]$TotalBytes = 0,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$ShowSourceOnly = $false,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$DoProgress = $true,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$DoReport = $true
     )
+
+    # Calculate the current percentage progress bucket
+    $Bucket = { $(if ($CopiedBytes -eq 0) { -1 } else { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / 10) * 10 }) }
 
     # -----------------------------
     # VALIDATION
@@ -472,24 +490,26 @@ function Stream-FileCopy {
     # -----------------------------
     # INITIALIZATION
     # -----------------------------
-    $totalBytes = (Get-Item -LiteralPath $SourcePath).Length
-    if ($totalBytes -eq 0) { $totalBytes = 1 }   # avoid divide-by-zero
+    $fileBytes = [int64](Get-Item -LiteralPath $SourcePath).Length
+    if ($TotalBytes -eq 0) { $TotalBytes = $fileBytes } # current file size
+    if ($TotalBytes -eq 0) { $TotalBytes = 1 }          # avoid divide-by-zero
 
     # Build dynamic format string for progress output, aligning byte counts to the right based on the total size
-    $maxBytesWidth = $totalBytes.ToString("N0").Length
+    $maxBytesWidth = $TotalBytes.ToString("N0").Length
     $percentWidth  = 3   # always 0–100
     $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
-    $copiedBytes = [int64]0
-    $lastReportedPercent = -1
-    $bufferSize = 4MB
-    $doProgress = ($totalBytes -gt (4 * $buffersize))
+    $lastReportedPercent = (&$Bucket)
+    $bufferSize = 4MB # chunk buffers for optimal performance
+
+    # Only do progress if the file take a few iterations or its the last file in a series of files
+    $DoProgress = ($DoProgress -and (($fileBytes -gt (4 * $buffersize)) -or (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes)))
 
     # Robocopy-like retry behavior
     $retries = 2
     $success = $false
 
-    Write-Host ("Copying {0} to {1}" -f $(FolderRelName $SourcePath), $(FolderRelName $DestinationPath))
+    Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" }))
 
     while (-not $success) {
         $sourceStream = $null
@@ -509,19 +529,17 @@ function Stream-FileCopy {
             # STREAM COPY LOOP
             # -----------------------------
             # Initial line
-            if ($doProgress) { Write-Host ($fmt -f 0, 0, $totalBytes) }
             while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                 $destStream.Write($buffer, 0, $bytesRead)
 
                 $bytesWrittenThisAttempt += $bytesRead
-                $copiedBytes             += $bytesRead
+                $CopiedBytes             += $bytesRead
 
                 # Progress calculation
-                $currentPercent = [math]::Floor(($copiedBytes / $totalBytes) * 100)
-                $percentBucket  = [math]::Floor($currentPercent / 10) * 10
+                $percentBucket  = (&$Bucket)
 
-                if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
-                    if ($doProgress) { Write-Host ($fmt -f $percentBucket, $copiedBytes, $totalBytes) }
+                if ($percentBucket -gt $lastReportedPercent) {
+                    if ($DoProgress) { Write-Host ($fmt -f $percentBucket, $CopiedBytes, $TotalBytes) }
                     $lastReportedPercent = $percentBucket
                 }
             }
@@ -531,7 +549,7 @@ function Stream-FileCopy {
         }
         catch {
             # Roll back global counter for this failed attempt
-            $copiedBytes -= $bytesWrittenThisAttempt
+            $CopiedBytes -= $bytesWrittenThisAttempt
 
             if ($retries -gt 0) {
                 Write-Warning ("Copy failed: {0}" -f $_.Exception.Message)
@@ -554,7 +572,7 @@ function Stream-FileCopy {
         }
     }
 
-    if ($doProgress) { Write-Host "Copy complete" }
+    if ($DoReport) { Write-Host "Copy complete" }
 }
 
 function Read-JsonFile {
@@ -1049,27 +1067,27 @@ function Invoke-ExtractISO {
         $sourceBase = $driveLetterRaw.TrimEnd('\') + '\'
         $destBase   = $paths.SrcIsoContent
 
-        Write-Host "Copying ISO tree -> $destBase..."
+        Write-Host "Copying ISO tree -> $(FolderRelName $destBase)..."
 
         # Pre-gather items and calculate total payload size using 64-bit integers
         $allItems = Get-ChildItem -Path $sourceBase -Recurse
-        $totalBytes = [int64]0
+        $TotalBytes = [int64]0
         foreach ($item in $allItems) {
-            if (-not $item.PSIsContainer) { $totalBytes += $item.Length }
+            if (-not $item.PSIsContainer) { $TotalBytes += $item.Length }
         }
-        if ($totalBytes -eq 0) { $totalBytes = 1 } # Avoid divide-by-zero on empty sources
+        if ($TotalBytes -eq 0) { $TotalBytes = 1 } # Avoid divide-by-zero on empty sources
 
-        $copiedBytes = [int64]0
+        $CopiedBytes = [int64]0
         $lastReportedPercent = -1
-        $bufferSize = 4 * 1024 * 1024 # 4MB chunk buffers for optimal performance
+        $bufferSize = 4MB # chunk buffers for optimal performance
 
         # Build dynamic format string
-        $maxBytesWidth = $totalBytes.ToString("N0").Length
+        $maxBytesWidth = $TotalBytes.ToString("N0").Length
         $percentWidth  = 3
         $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
         # Initial line
-        Write-Host ($fmt -f 0, 0, $totalBytes)
+        Write-Host ($fmt -f 0, 0, $TotalBytes)
         foreach ($item in $allItems) {
             # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
             $relativePath = $item.FullName.Substring($sourceBase.Length)
@@ -1085,70 +1103,8 @@ function Invoke-ExtractISO {
                 # Outputs to Stream 4 (Verbose). Captured by *>&1
                 Write-Verbose "File:   $relativePath"
                 
-                # Mimic Robocopy /R:2 /W:1 (1 initial attempt + 2 retries, 1 sec wait)
-                $retries = 2
-                $success = $false
-                
-                while (-not $success) {
-                    $sourceStream = $null
-                    $destStream   = $null
-                    $bytesWrittenThisAttempt = [int64]0
-                    $aborted = $true # Default to true, proven false only on complete file success
-                    
-                    try {
-                        # Ensure parent directory exists before streaming
-                        $parentDir = Split-Path -Path $targetPath -Parent
-                        if (-not (Test-Path -Path $parentDir)) {
-                            $null = New-Item -Path $parentDir -ItemType Directory -Force
-                        }
-
-                        # Open low-level .NET file streams
-                        $sourceStream = [System.IO.File]::OpenRead($item.FullName)
-                        $destStream   = [System.IO.File]::Create($targetPath)
-                        $buffer       = New-Object Byte[] $bufferSize
-
-                        # Read and write in 4MB blocks
-                        while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                            $destStream.Write($buffer, 0, $bytesRead)
-                            
-                            $bytesWrittenThisAttempt += $bytesRead
-                            $copiedBytes             += $bytesRead
-
-                            # Calculate progress dynamically mid-file execution
-                            $currentPercent = [math]::Floor(($copiedBytes / $totalBytes) * 100)
-                            $percentBucket  = [math]::Floor($currentPercent / 10) * 10
-                            
-                            if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
-                                # Outputs to Stream 1 (Success). Captured directly by tee
-                                Write-Host ($fmt -f $percentBucket, $copiedBytes, $totalBytes)
-
-                                $lastReportedPercent = $percentBucket
-                            }
-                        }
-
-                        $aborted = $false # Entire file copied without interruption
-                        $success = $true
-                    } catch {
-                        # Rollback global counter for what we wrote during this failed attempt
-                        $copiedBytes -= $bytesWrittenThisAttempt
-
-                        if ($retries -gt 0) {
-                            Start-Sleep -Seconds 1
-                            $retries--
-                        } else {
-                            throw "Native stream copy failed for '$($item.FullName)' to '$targetPath' after retries"
-                        }
-                    } finally {
-                        # CRITICAL: This block executes even if the pipeline is halted via Ctrl+C
-                        if ($sourceStream) { $sourceStream.Close(); $sourceStream.Dispose() }
-                        if ($destStream)   { $destStream.Close(); $destStream.Dispose() }
-                        
-                        # If an error occurred or user issued Ctrl+C, delete the incomplete file
-                        if ($aborted -and (Test-Path -Path $targetPath)) {
-                            Remove-Item -Path $targetPath -Force -ErrorAction SilentlyContinue
-                        }
-                    }
-                }
+                Stream-FileCopy -SourcePath $item.FullName -DestinationPath $targetPath -CopiedBytes $CopiedBytes -TotalBytes $TotalBytes -DoReport $false -ShowSourceOnly $true
+                $CopiedBytes += $item.Length
             }
         }
     } catch {
@@ -2702,8 +2658,8 @@ function Invoke-FilesWork {
         foreach ($d in $specialTo)       { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
     } else {
         foreach ($f in $requiredFolders) { Ensure-Folder $f }
-        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) }
-        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) }
+        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) -DoReport $false }
+        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) -DoReport $false }
     }
 
     Write-Host "Files workflow complete"
