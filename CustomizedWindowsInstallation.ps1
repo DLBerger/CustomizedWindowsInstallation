@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "49572f5"
+$GitHash = "c838ced"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -453,26 +453,18 @@ function Clean-Folder {
 function Stream-FileCopy {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Position = 0)]
         [string]$SourcePath,
 
-        [Parameter(Mandatory = $true)]
+        [Parameter(Position = 1)]
         [string]$DestinationPath,
 
-        [Parameter(Mandatory = $false)]
         [int64]$CopiedBytes = 0,
-
-        [Parameter(Mandatory = $false)]
         [int64]$TotalBytes = 0,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$ShowSourceOnly = $false,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$DoProgress = $true,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$DoReport = $true
+        [switch]$ShowSourceOnly,
+        [switch]$NoTitle,
+        [switch]$NoProgress,
+        [switch]$NoComplete
     )
 
     # -----------------------------
@@ -503,20 +495,19 @@ function Stream-FileCopy {
     $bufferSize = 4MB # chunk buffers for optimal performance
 
     # Progress?
-    $DoProgress = ($DoProgress -and `                                                          # Not progress wanted
-                   ( `
-                     ($fileBytes -gt (4 * $buffersize)) -or `                                  # Large file
-                     (-not (($CopiedBytes -eq 0) -and ($fileBytes -eq $TotalBytes))) -or `     # Not a single file
-                     (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes) ` # Last file of a series of files
-                   ) `
+    $doProgress = ((-not $NoProgress) -and                                                   # No output wanted
+                   (
+                     ($fileBytes -gt (4 * $buffersize)) -or                                  # Large file
+                     (-not (($CopiedBytes -eq 0) -and ($fileBytes -eq $TotalBytes))) -or     # Not a single file
+                     (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes) # Last file of a series of files
+                   )
                   )
 
     # Robocopy-like retry behavior
     $retries = 2
     $success = $false
 
-    Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" }))
-
+    if (-not $NoTitle) { Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" })) }
     while (-not $success) {
         $sourceStream = $null
         $destStream   = $null
@@ -544,7 +535,7 @@ function Stream-FileCopy {
                 # Progress calculation
                 $percentBucket = (&$Bucket $CopiedBytes $TotalBytes)
                 if ($percentBucket -gt $lastReportedPercent) {
-                    if ($DoProgress) { Write-Host ($fmt -f $percentBucket, $CopiedBytes, $TotalBytes) }
+                    if ($doProgress) { Write-Host ($fmt -f $percentBucket, $CopiedBytes, $TotalBytes) }
                     $lastReportedPercent = $percentBucket
                 }
             }
@@ -576,8 +567,63 @@ function Stream-FileCopy {
             }
         }
     }
+    if (-not $NoComplete) { Write-Host "Copy complete" }
+}
 
-    if ($DoReport) { Write-Host "Copy complete" }
+function Stream-FolderCopy {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$SourcePath,
+
+        [Parameter(Position = 1)]
+        [string]$DestinationPath,
+
+        [switch]$ShowSourceOnly,
+        [switch]$NoTitle,
+        [switch]$NoProgress,
+        [switch]$NoComplete
+    )
+
+    if (-not (Test-Path -Path $SourcePath)) {
+        throw "Stream-FolderCopy source folder does not exist: $SourcePath"
+    }
+    try {
+        if (-not $NoTitle) { Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" })) }
+
+        # Pre-gather items and calculate total payload size using 64-bit integers
+        $allItems = Get-ChildItem -Path $SourcePath -Recurse
+        $TotalBytes = [int64]0
+        foreach ($item in $allItems) {
+            if (-not $item.PSIsContainer) { $TotalBytes += $item.Length }
+        }
+        if ($TotalBytes -eq 0) { $TotalBytes = 1 } # Avoid divide-by-zero on empty sources
+        $CopiedBytes = [int64]0
+
+        foreach ($item in $allItems) {
+            # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
+            $relativePath = $item.FullName.Substring($SourcePath.Length)
+            $targetPath   = Join-Path -Path $DestinationPath -ChildPath $relativePath
+
+            if ($item.PSIsContainer) {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "Folder: $relativePath"
+                if (-not (Test-Path -Path $targetPath)) {
+                    $null = New-Item -Path $targetPath -ItemType Directory -Force
+                }
+            } else {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "File:   $relativePath"
+                Stream-FileCopy -SourcePath $item.FullName -DestinationPath $targetPath -CopiedBytes $CopiedBytes -TotalBytes $TotalBytes `
+                                -ShowSourceOnly:$ShowSourceOnly -NoTitle:$NoTitle -NoProgress:$NoProgress -NoComplete
+                $CopiedBytes += $item.Length
+            }
+        }
+        if (-not $NoComplete) { Write-Host "Copy complete" }
+    } catch {
+        Remove-Folder $DestinationPath
+        throw "ERROR during folder copy: $_"
+    }
 }
 
 function Read-JsonFile {
@@ -1072,36 +1118,8 @@ function Invoke-ExtractISO {
         $sourceBase = $driveLetterRaw.TrimEnd('\') + '\'
         $destBase   = $paths.SrcIsoContent
 
-        Write-Host "Copying ISO tree -> $(FolderRelName $destBase)..."
-
-        # Pre-gather items and calculate total payload size using 64-bit integers
-        $allItems = Get-ChildItem -Path $sourceBase -Recurse
-        $TotalBytes = [int64]0
-        foreach ($item in $allItems) {
-            if (-not $item.PSIsContainer) { $TotalBytes += $item.Length }
-        }
-        if ($TotalBytes -eq 0) { $TotalBytes = 1 } # Avoid divide-by-zero on empty sources
-        $CopiedBytes = [int64]0
-
-        foreach ($item in $allItems) {
-            # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
-            $relativePath = $item.FullName.Substring($sourceBase.Length)
-            $targetPath   = Join-Path -Path $destBase -ChildPath $relativePath
-
-            if ($item.PSIsContainer) {
-                # Outputs to Stream 4 (Verbose). Captured by *>&1
-                Write-Verbose "Folder: $relativePath"
-                if (-not (Test-Path -Path $targetPath)) {
-                    $null = New-Item -Path $targetPath -ItemType Directory -Force
-                }
-            } else {
-                # Outputs to Stream 4 (Verbose). Captured by *>&1
-                Write-Verbose "File:   $relativePath"
-                
-                Stream-FileCopy -SourcePath $item.FullName -DestinationPath $targetPath -CopiedBytes $CopiedBytes -TotalBytes $TotalBytes -DoReport $false -ShowSourceOnly $true
-                $CopiedBytes += $item.Length
-            }
-        }
+        # Copy it and Stream-FolderCopy will give you a running commentary
+        Stream-FolderCopy $sourceBase $destBase -ShowSourceOnly
     } catch {
         Write-Host "ERROR during ISO extraction: $_"
         # Clean up the partial SrcIsoContent so a re-run starts fresh
@@ -2653,8 +2671,8 @@ function Invoke-FilesWork {
         foreach ($d in $specialTo)       { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
     } else {
         foreach ($f in $requiredFolders) { Ensure-Folder $f }
-        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) -DoReport $false }
-        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) -DoReport $false }
+        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) -NoComplete }
+        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) -NoComplete }
     }
 
     Write-Host "Files workflow complete"
