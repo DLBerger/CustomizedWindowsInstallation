@@ -16,11 +16,14 @@ $RegistryAddModify = @(
     },
     @{
         Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
-        Values = @('LaunchTo',
-                    'Start_IrisRecommendations',
-                    'ShowTaskViewButton',
-                    'HideFileExt',
-                    'SeparateProcess')
+        Values = @(
+                   'HideFileExt',
+                   'LaunchTo',
+                   'SeparateProcess',
+                   'ShowTaskViewButton',
+                   'Start_IrisRecommendations',
+                   'UseCompactMode'
+                   )
     },
     @{
         Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\CabinetState'
