@@ -1,8 +1,5 @@
-param(
-    [string]$Folder
-)
+param([string]$Folder = '.\Registry')
 
-$RegistryRoot = 'Registry'
 
 # An empty list in the Values means work on the entire key
 $RegistryAddModify = @(
@@ -158,15 +155,12 @@ function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
     $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
 }
 
-# Apply folder default
-if (-not $Folder) { $Folder = $RegistryRoot }
-
 # ==============================
 # Resolve working folder and make sure it exists
 # ==============================
-$Folder = (Resolve-Path -LiteralPath $Folder -ErrorAction Stop).ProviderPath
-Write-Output "Resolved working folder: $Folder"
 if (-not (Test-Path $Folder)) { New-Item -ItemType Directory -Path $Folder -Force | Out-Null }
+$Folder = (Resolve-Path -LiteralPath $Folder -ErrorAction Continue).ProviderPath
+Write-Output "Resolved working folder: $Folder"
 
 #
 # PROCESS ADD/MODIFY
