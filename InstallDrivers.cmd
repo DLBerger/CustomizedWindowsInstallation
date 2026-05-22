@@ -4,6 +4,7 @@ setlocal
 set "SRC=%~dp0"
 set "FLD=$WinpeDriver$"
 
-echo Import drivers
-pnputil /add-driver "%SRC%%FLD%\*.inf" /subdirs /install
+echo Importing drivers using DISM...
+dism /online /Add-Driver /Driver:"%SRC%%FLD%" /Recurse /ForceUnsigned /logpath:"%SRC%%FLD%\dism-import.log"
+
 endlocal
