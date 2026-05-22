@@ -200,10 +200,13 @@ param(
 )
 
 # git hash
-$GitHash = "6f3b23f"
+$GitHash = "49572f5"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
+
+# Calculate the current percentage progress bucket
+$Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes) $(if ($CopiedBytes -eq 0) { -1 } else { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / 10) * 10 }) }
 
 # Hex converter to string.  Write-xxxx ($(& $Hex $rc))
 $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
@@ -472,9 +475,6 @@ function Stream-FileCopy {
         [bool]$DoReport = $true
     )
 
-    # Calculate the current percentage progress bucket
-    $Bucket = { $(if ($CopiedBytes -eq 0) { -1 } else { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / 10) * 10 }) }
-
     # -----------------------------
     # VALIDATION
     # -----------------------------
@@ -499,11 +499,17 @@ function Stream-FileCopy {
     $percentWidth  = 3   # always 0–100
     $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
-    $lastReportedPercent = (&$Bucket)
+    $lastReportedPercent = (&$Bucket $CopiedBytes $TotalBytes)
     $bufferSize = 4MB # chunk buffers for optimal performance
 
-    # Only do progress if the file take a few iterations or its the last file in a series of files
-    $DoProgress = ($DoProgress -and (($fileBytes -gt (4 * $buffersize)) -or (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes)))
+    # Progress?
+    $DoProgress = ($DoProgress -and `                                                          # Not progress wanted
+                   ( `
+                     ($fileBytes -gt (4 * $buffersize)) -or `                                  # Large file
+                     (-not (($CopiedBytes -eq 0) -and ($fileBytes -eq $TotalBytes))) -or `     # Not a single file
+                     (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes) ` # Last file of a series of files
+                   ) `
+                  )
 
     # Robocopy-like retry behavior
     $retries = 2
@@ -536,8 +542,7 @@ function Stream-FileCopy {
                 $CopiedBytes             += $bytesRead
 
                 # Progress calculation
-                $percentBucket  = (&$Bucket)
-
+                $percentBucket = (&$Bucket $CopiedBytes $TotalBytes)
                 if ($percentBucket -gt $lastReportedPercent) {
                     if ($DoProgress) { Write-Host ($fmt -f $percentBucket, $CopiedBytes, $TotalBytes) }
                     $lastReportedPercent = $percentBucket
@@ -1076,18 +1081,8 @@ function Invoke-ExtractISO {
             if (-not $item.PSIsContainer) { $TotalBytes += $item.Length }
         }
         if ($TotalBytes -eq 0) { $TotalBytes = 1 } # Avoid divide-by-zero on empty sources
-
         $CopiedBytes = [int64]0
-        $lastReportedPercent = -1
-        $bufferSize = 4MB # chunk buffers for optimal performance
 
-        # Build dynamic format string
-        $maxBytesWidth = $TotalBytes.ToString("N0").Length
-        $percentWidth  = 3
-        $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
-
-        # Initial line
-        Write-Host ($fmt -f 0, 0, $TotalBytes)
         foreach ($item in $allItems) {
             # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
             $relativePath = $item.FullName.Substring($sourceBase.Length)
