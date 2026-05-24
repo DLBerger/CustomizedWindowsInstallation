@@ -39,6 +39,7 @@ $names = [ordered]@{
     WinreWim              = 'winre.wim'
     BootFileBIOS          = 'boot\etfsboot.com'
     BootFileUEFI          = 'efi\microsoft\boot\efisys.bin'
+    SetupExe              = 'setup.exe'
     ExportDriversCmd      = 'ExportDrivers.cmd'
     InstallDriversCmd     = 'InstallDrivers.cmd'
     ExportRegsCmd         = 'ExportRegs.cmd'
@@ -48,11 +49,13 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
+    PostSetupCmd          = 'PostSetup.cmd'
+    SetupCompleteCmd      = 'SetupComplete.cmd'
+    UpdateNETCmd          = 'Update.NET.cmd'
+    UpdateNETPs1          = 'Update.NET.ps1'
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
-    PrepJson              = 'prep.json'
-    FinalJson             = 'final.json'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -64,33 +67,6 @@ $wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final', 'Scratch', 'Logs')
 foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
-
-$names.RequiredFiles = @(
-    $names.InstallDriversCmd,
-    $names.InstallRegsCmd,
-    $names.ExportDriversCmd,
-    $names.ExportRegsCmd,
-    $names.ExportRegsPs1,
-    $names.SetupConfigCleanIni,
-    $names.SetupConfigUpgradeIni,
-    $names.CleanInstallCmd,
-    $names.UpgradeCmd
-)
-
-$names.RequiredTransforms = @(
-    @($names.ExportDriversCmd, @(
-        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
-    )),
-    @($names.InstallDriversCmd, @(
-        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
-    )),
-    @($names.ExportRegsPs1, @(
-        @('set "FLD=Registry"', $names.Registry)
-    )),
-    @($names.InstallRegsCmd, @(
-        @("$RegistryRoot = 'Registry'", $names.Registry)
-    ))
-)
 
 $paths = [ordered]@{}
 $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
@@ -108,28 +84,27 @@ $paths.DestIsoRoot           = Join-Path $Folder $names.DestIso
 $paths.DestIsoContent        = Join-Path $paths.DestIsoRoot $names.Content
 $paths.BIOSInDest            = Join-Path $paths.DestIsoContent $names.BootFileBIOS
 $paths.UEFIInDest            = Join-Path $paths.DestIsoContent $names.BootFileUEFI
+$paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
-$paths.RegistryRoot          = Join-Path $Folder $names.Registry
-$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
-$paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
-$paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
-$paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
-$paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
-$paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
-$paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
+$paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
+$paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
+$paths.ScriptsInDest         = Join-Path $paths.SourcesInDest '$OEM$\$$\Setup\Scripts'
+$paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
     $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
+}
+$paths.KBsInDest             = Join-Path $paths.DestIsoContent $names.KBs
+foreach ($u in $kbDirs) {
+    $paths["KBsInDest$u"]    = Join-Path $paths.KBsInDest $names.$u
 }
 $paths.WimsRoot              = Join-Path $Folder $names.Wims
 foreach ($u in $wimDirs) {
     $paths["Wims$u"]         = Join-Path $paths.WimsRoot $names.$u
 }
 $paths.ExtractJson           = Join-Path $paths.SrcIsoRoot  $names.ExtractJson
-$paths.PrepJson              = Join-Path $paths.DestIsoRoot $names.PrepJson
 $paths.MetadataJson          = Join-Path $paths.WimsIndices $names.MetadataJson
 $paths.FinalJson             = Join-Path $paths.WimsFinal   $names.FinalJson
 $paths.InstallWimInFinal     = Join-Path $paths.WimsFinal   $names.InstallWim
