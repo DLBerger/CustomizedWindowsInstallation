@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "c838ced"
+$GitHash = "260826f"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -244,6 +244,8 @@ $names = [ordered]@{
     UpgradeCmd            = 'Upgrade.cmd'
     PostSetupCmd          = 'PostSetup.cmd'
     SetupCompleteCmd      = 'SetupComplete.cmd'
+    UpdateNETCmd          = 'Update.NET.cmd'
+    UpdateNETPs1          = 'Update.NET.ps1'
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
@@ -258,38 +260,6 @@ $wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final', 'Scratch', 'Logs')
 foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
-
-# ==============================
-# RequiredFiles and RequiredTransforms
-# ==============================
-$names.RequiredFiles = @(
-    $names.InstallDriversCmd,
-    $names.InstallRegsCmd,
-    $names.ExportDriversCmd,
-    $names.ExportRegsCmd,
-    $names.ExportRegsPs1,
-    $names.SetupConfigCleanIni,
-    $names.SetupConfigUpgradeIni,
-    $names.CleanInstallCmd,
-    $names.UpgradeCmd
-)
-
-# Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
-# **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
-$names.RequiredTransforms = @(
-    @($names.ExportDriversCmd, @(
-        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
-    )),
-    @($names.InstallDriversCmd, @(
-        @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
-    )),
-    @($names.ExportRegsPs1, @(
-        @('set "FLD=Registry"', $names.Registry)
-    )),
-    @($names.InstallRegsCmd, @(
-        @("$RegistryRoot = 'Registry'", $names.Registry)
-    ))
-)
 
 # Ensure elevated
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -2618,17 +2588,16 @@ function Invoke-PrepDestISO {
 # ==============================
 # File work for the destination ISO
 # ==============================
-
 function Invoke-FilesWork {
     [CmdletBinding()]
     param()
 
     Write-Host "Starting Files workflow..."
 
-    $requiredFolders = $(
+    # Lists
+    $destFolders = $(
         $paths.WinpeDriverRoot
         $paths.RegistryRoot
-        $paths.KBsInDest
         $paths.ScriptsInDest
     )
 
@@ -2642,37 +2611,115 @@ function Invoke-FilesWork {
         $names.SetupConfigUpgradeIni
         $names.CleanInstallCmd
         $names.UpgradeCmd
-        $names.PostSetupCmd
+        $names.UpdateNETCmd
+        $names.UpdateNETPs1
     )
 
-    $specialFiles = $(
+    $scriptsFiles = $(
         $names.SetupCompleteCmd
     )
 
-    $From  = $Folder
-    $To    = $paths.DestIsoContent
-    $SpcTo = $paths.ScriptsInDest
+    # Copy these KBs folders, if they exist
+    $maybeKBs = $(
+        $names.NET
+        $names.MISC
+    )
 
-    $requiredFrom = foreach ($u in $requiredFiles) { Join-Path $From  $u }
-    $requiredTo   = foreach ($u in $requiredFiles) { Join-Path $To    $u }
-    $specialTo    = foreach ($u in $specialFiles)  { Join-Path $SpcTo $u }
+<#
+    # Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
+    # **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
+    $transforms = @(
+        @($names.ExportDriversCmd, @(
+            @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+        )),
+        @($names.InstallDriversCmd, @(
+            @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+        )),
+        @($names.ExportRegsPs1, @(
+            @('set "FLD=Registry"', $names.Registry)
+        )),
+        @($names.InstallRegsCmd, @(
+            @("$RegistryRoot = 'Registry'", $names.Registry)
+        ))
+    )
 
-    if (Report-Missing -Required $requiredFrom) {
-        throw "Boot files are missing from $From"
+    #
+    # Transforms block
+    #
+    # These transforms rewrite destination paths for special cases
+    #
+    $transforms = @(
+        @{ Match = $names.SetupConfigCleanIni;   To = $paths.SetupConfigIni }
+        @{ Match = $names.SetupConfigUpgradeIni; To = $paths.SetupConfigIni }
+    )
+#>
+
+    # Build jobs list
+    $jobs = @()
+
+    foreach ($f in $destFolders) {
+        $jobs += [ordered]@{ Action = 'Ensure-Folder'; From = ''; To = $f }
     }
 
-    if ($Clean) {
-        foreach ($c in $requiredFolders) { Clean-Folder $(FolderRelName $c) }
-        foreach ($c in $requiredTo)      { Clean-File   $(FolderRelName $c) }
-        foreach ($c in $specialTo)       { Clean-File   $(FolderRelName $c) }
-    } elseif ($DryRun) {
-        foreach ($d in $requiredFolders) { Write-Host "[DryRun] Would create: $(FolderRelName $d)" }
-        foreach ($d in $requiredTo)      { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
-        foreach ($d in $specialTo)       { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
-    } else {
-        foreach ($f in $requiredFolders) { Ensure-Folder $f }
-        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) -NoComplete }
-        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) -NoComplete }
+    foreach ($f in $requiredFiles) {
+        $jobs += [ordered]@{ Action = 'Stream-FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.DestIsoContent $f) }
+    }
+
+    foreach ($f in $scriptsFiles) {
+        $jobs += [ordered]@{ Action = 'Stream-FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.ScriptsInDest $f) }
+    }
+
+    $addedEnsure = $false
+    foreach ($kb in $maybeKBs) {
+        $src = Join-Path $paths.KBsRoot $kb
+        if (Test-Path $src) {
+            if (-not $addedEnsure) {
+                $addedEnsure = $true
+                $jobs += [ordered]@{ Action = 'Ensure-Folder'; From = ""; To = $paths.KBsInDest }
+            }
+            $dst = Join-Path $paths.KBsInDest $kb
+            $jobs += [ordered]@{ Action = 'Stream-FolderCopy'; From = $src; To = $dst }
+        }
+    }
+
+    # Debug dump
+    if ($DebugPreference -eq 'Continue') {
+        Write-Debug "Jobs list:"
+        $w = ($jobs.Action | Measure-Object -Maximum -Property Length).Maximum
+        foreach ($j in $jobs) {
+            $a = $j.Action.PadLeft($w)
+            Write-Debug ("  {0} {1}" -f $a, ($j.From, $j.To -join " "))
+        }
+    }
+
+    # Missing-file check
+    $missing = $jobs |
+        Where-Object   { $_.Action -eq 'Stream-FileCopy' } |
+        ForEach-Object { $_.From }
+
+    if (Report-Missing -Required $missing) {
+        throw "Boot files are missing from $Folder"
+    }
+
+    # Execute each job
+    foreach ($j in $jobs) {
+        switch ($j.Action) {
+            'Ensure-Folder' {
+                if     ($Clean)  { Clean-Folder (FolderRelName $j.To) }
+                elseif ($DryRun) { Write-Host "[DryRun] Would create: $(FolderRelName $j.To)" }
+                else             { Ensure-Folder $j.To }
+            }
+            'Stream-FileCopy' {
+                if     ($Clean)  { Clean-File (FolderRelName $j.To) }
+                elseif ($DryRun) { Write-Host "[DryRun] Would write : $(FolderRelName $j.To)" }
+                else             { Stream-FileCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
+            }
+            'Stream-FolderCopy' {
+                if     ($Clean)  { Clean-File (FolderRelName $j.To) }
+                elseif ($DryRun) { Write-Host "[DryRun] Would copy  : $(FolderRelName $j.From) to $(FolderRelName $j.To)" }
+                else             { Stream-FolderCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
+            }
+        }
     }
 
     Write-Host "Files workflow complete"
@@ -2880,12 +2927,15 @@ $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
 $paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
-$paths.KBsInDest             = Join-Path $paths.DestIsoContent $names.KBs
 $paths.ScriptsInDest         = Join-Path $paths.SourcesInDest '$OEM$\$$\Setup\Scripts'
 $paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
     $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
+}
+$paths.KBsInDest             = Join-Path $paths.DestIsoContent $names.KBs
+foreach ($u in $kbDirs) {
+    $paths["KBsInDest$u"]    = Join-Path $paths.KBsInDest $names.$u
 }
 $paths.WimsRoot              = Join-Path $Folder $names.Wims
 foreach ($u in $wimDirs) {

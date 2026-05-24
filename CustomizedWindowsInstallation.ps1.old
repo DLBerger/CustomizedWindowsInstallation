@@ -1,3 +1,4 @@
+# Remember: variable names are CASE INSENSITIVE
 <#
 .SYNOPSIS
 Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media.
@@ -53,12 +54,6 @@ Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serv
 Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
 Alias: -PrepDestISO
 
-.PARAMETER Drivers
-Export drivers into $WinpeDriver$.
-
-.PARAMETER Reg
-Export registry keys.
-
 .PARAMETER Files
 Copy various .cmd, .ps1, and .ini files with transformations to customize them for the current folder structure and configuration.
 
@@ -66,7 +61,7 @@ Copy various .cmd, .ps1, and .ini files with transformations to customize them f
 Create the final .iso from DestISO\Content\ using oscdimg.
 
 .PARAMETER All
-Shorthand for -Extract -Export -KB -Service -Final -Prep -Drivers -Reg -Files -CreateISO.
+Shorthand for -Extract -Export -KB -Service -Final -Prep -Files -CreateISO.
 Default when no specific switch is provided.
 
 .PARAMETER Most
@@ -167,8 +162,6 @@ param(
     [switch]$KB,
     [switch]$Service,
     [switch]$Final,
-    [switch]$Drivers,
-    [switch]$Reg,
     [switch]$Files,
 
     [Alias('PrepDestISO')]
@@ -207,10 +200,13 @@ param(
 )
 
 # git hash
-$GitHash = "8d2e299"
+$GitHash = "260826f"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
+
+# Calculate the current percentage progress bucket
+$Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes) $(if ($CopiedBytes -eq 0) { -1 } else { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / 10) * 10 }) }
 
 # Hex converter to string.  Write-xxxx ($(& $Hex $rc))
 $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
@@ -246,6 +242,8 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
+    PostSetupCmd          = 'PostSetup.cmd'
+    SetupCompleteCmd      = 'SetupComplete.cmd'
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
@@ -317,6 +315,26 @@ Write-Debug "ProgressPreference set to 'SilentlyContinue'"
 # ==============================
 # Helper functions
 # ==============================
+
+function FolderRelName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ($Path -like "$Folder*") {
+        $len = $Folder.Length
+
+        if ($Path.Length -gt ($len + 2)) {
+            if ($Path[$len] -eq '\') {
+                return $Path.Substring($len + 1)
+            }
+        }
+    }
+
+    return $Path
+}
+
 function Protect-Token([string]$s) {
   if (-not $s) { return "unknown" }
   $t = $s -replace '[^\w\.-]+','_'
@@ -435,11 +453,18 @@ function Clean-Folder {
 function Stream-FileCopy {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Position = 0)]
         [string]$SourcePath,
 
-        [Parameter(Mandatory = $true)]
-        [string]$DestinationPath
+        [Parameter(Position = 1)]
+        [string]$DestinationPath,
+
+        [int64]$CopiedBytes = 0,
+        [int64]$TotalBytes = 0,
+        [switch]$ShowSourceOnly,
+        [switch]$NoTitle,
+        [switch]$NoProgress,
+        [switch]$NoComplete
     )
 
     # -----------------------------
@@ -457,24 +482,32 @@ function Stream-FileCopy {
     # -----------------------------
     # INITIALIZATION
     # -----------------------------
-    $totalBytes = (Get-Item -LiteralPath $SourcePath).Length
-    if ($totalBytes -eq 0) { $totalBytes = 1 }   # avoid divide-by-zero
+    $fileBytes = [int64](Get-Item -LiteralPath $SourcePath).Length
+    if ($TotalBytes -eq 0) { $TotalBytes = $fileBytes } # current file size
+    if ($TotalBytes -eq 0) { $TotalBytes = 1 }          # avoid divide-by-zero
 
     # Build dynamic format string for progress output, aligning byte counts to the right based on the total size
-    $maxBytesWidth = $totalBytes.ToString("N0").Length
+    $maxBytesWidth = $TotalBytes.ToString("N0").Length
     $percentWidth  = 3   # always 0–100
     $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
-    $copiedBytes = [int64]0
-    $lastReportedPercent = -1
-    $bufferSize = 4MB
+    $lastReportedPercent = (&$Bucket $CopiedBytes $TotalBytes)
+    $bufferSize = 4MB # chunk buffers for optimal performance
+
+    # Progress?
+    $doProgress = ((-not $NoProgress) -and                                                   # No output wanted
+                   (
+                     ($fileBytes -gt (4 * $buffersize)) -or                                  # Large file
+                     (-not (($CopiedBytes -eq 0) -and ($fileBytes -eq $TotalBytes))) -or     # Not a single file
+                     (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes) # Last file of a series of files
+                   )
+                  )
 
     # Robocopy-like retry behavior
     $retries = 2
     $success = $false
 
-    Write-Host ("Copying:`n  From: {0}`n  To:   {1}" -f $SourcePath, $DestinationPath)
-
+    if (-not $NoTitle) { Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" })) }
     while (-not $success) {
         $sourceStream = $null
         $destStream   = $null
@@ -493,19 +526,16 @@ function Stream-FileCopy {
             # STREAM COPY LOOP
             # -----------------------------
             # Initial line
-            Write-Host ($fmt -f 0, 0, $totalBytes)
             while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                 $destStream.Write($buffer, 0, $bytesRead)
 
                 $bytesWrittenThisAttempt += $bytesRead
-                $copiedBytes             += $bytesRead
+                $CopiedBytes             += $bytesRead
 
                 # Progress calculation
-                $currentPercent = [math]::Floor(($copiedBytes / $totalBytes) * 100)
-                $percentBucket  = [math]::Floor($currentPercent / 10) * 10
-
-                if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
-                    Write-Host ($fmt -f $percentBucket, $copiedBytes, $totalBytes)
+                $percentBucket = (&$Bucket $CopiedBytes $TotalBytes)
+                if ($percentBucket -gt $lastReportedPercent) {
+                    if ($doProgress) { Write-Host ($fmt -f $percentBucket, $CopiedBytes, $TotalBytes) }
                     $lastReportedPercent = $percentBucket
                 }
             }
@@ -515,7 +545,7 @@ function Stream-FileCopy {
         }
         catch {
             # Roll back global counter for this failed attempt
-            $copiedBytes -= $bytesWrittenThisAttempt
+            $CopiedBytes -= $bytesWrittenThisAttempt
 
             if ($retries -gt 0) {
                 Write-Warning ("Copy failed: {0}" -f $_.Exception.Message)
@@ -537,8 +567,63 @@ function Stream-FileCopy {
             }
         }
     }
+    if (-not $NoComplete) { Write-Host "Copy complete" }
+}
 
-    Write-Host "Copy complete"
+function Stream-FolderCopy {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$SourcePath,
+
+        [Parameter(Position = 1)]
+        [string]$DestinationPath,
+
+        [switch]$ShowSourceOnly,
+        [switch]$NoTitle,
+        [switch]$NoProgress,
+        [switch]$NoComplete
+    )
+
+    if (-not (Test-Path -Path $SourcePath)) {
+        throw "Stream-FolderCopy source folder does not exist: $SourcePath"
+    }
+    try {
+        if (-not $NoTitle) { Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" })) }
+
+        # Pre-gather items and calculate total payload size using 64-bit integers
+        $allItems = Get-ChildItem -Path $SourcePath -Recurse
+        $TotalBytes = [int64]0
+        foreach ($item in $allItems) {
+            if (-not $item.PSIsContainer) { $TotalBytes += $item.Length }
+        }
+        if ($TotalBytes -eq 0) { $TotalBytes = 1 } # Avoid divide-by-zero on empty sources
+        $CopiedBytes = [int64]0
+
+        foreach ($item in $allItems) {
+            # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
+            $relativePath = $item.FullName.Substring($SourcePath.Length)
+            $targetPath   = Join-Path -Path $DestinationPath -ChildPath $relativePath
+
+            if ($item.PSIsContainer) {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "Folder: $relativePath"
+                if (-not (Test-Path -Path $targetPath)) {
+                    $null = New-Item -Path $targetPath -ItemType Directory -Force
+                }
+            } else {
+                # Outputs to Stream 4 (Verbose). Captured by *>&1
+                Write-Verbose "File:   $relativePath"
+                Stream-FileCopy -SourcePath $item.FullName -DestinationPath $targetPath -CopiedBytes $CopiedBytes -TotalBytes $TotalBytes `
+                                -ShowSourceOnly:$ShowSourceOnly -NoTitle:$NoTitle -NoProgress:$NoProgress -NoComplete
+                $CopiedBytes += $item.Length
+            }
+        }
+        if (-not $NoComplete) { Write-Host "Copy complete" }
+    } catch {
+        Remove-Folder $DestinationPath
+        throw "ERROR during folder copy: $_"
+    }
 }
 
 function Read-JsonFile {
@@ -1033,108 +1118,8 @@ function Invoke-ExtractISO {
         $sourceBase = $driveLetterRaw.TrimEnd('\') + '\'
         $destBase   = $paths.SrcIsoContent
 
-        Write-Host "Copying ISO tree -> $destBase..."
-
-        # Pre-gather items and calculate total payload size using 64-bit integers
-        $allItems = Get-ChildItem -Path $sourceBase -Recurse
-        $totalBytes = [int64]0
-        foreach ($item in $allItems) {
-            if (-not $item.PSIsContainer) { $totalBytes += $item.Length }
-        }
-        if ($totalBytes -eq 0) { $totalBytes = 1 } # Avoid divide-by-zero on empty sources
-
-        $copiedBytes = [int64]0
-        $lastReportedPercent = -1
-        $bufferSize = 4 * 1024 * 1024 # 4MB chunk buffers for optimal performance
-
-        # Build dynamic format string
-        $maxBytesWidth = $totalBytes.ToString("N0").Length
-        $percentWidth  = 3
-        $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
-
-        # Initial line
-        Write-Host ($fmt -f 0, 0, $totalBytes)
-        foreach ($item in $allItems) {
-            # Isolate the relative path (e.g., 'boot\bcd' instead of 'D:\boot\bcd')
-            $relativePath = $item.FullName.Substring($sourceBase.Length)
-            $targetPath   = Join-Path -Path $destBase -ChildPath $relativePath
-
-            if ($item.PSIsContainer) {
-                # Outputs to Stream 4 (Verbose). Captured by *>&1
-                Write-Verbose "Folder: $relativePath"
-                if (-not (Test-Path -Path $targetPath)) {
-                    $null = New-Item -Path $targetPath -ItemType Directory -Force
-                }
-            } else {
-                # Outputs to Stream 4 (Verbose). Captured by *>&1
-                Write-Verbose "File:   $relativePath"
-                
-                # Mimic Robocopy /R:2 /W:1 (1 initial attempt + 2 retries, 1 sec wait)
-                $retries = 2
-                $success = $false
-                
-                while (-not $success) {
-                    $sourceStream = $null
-                    $destStream   = $null
-                    $bytesWrittenThisAttempt = [int64]0
-                    $aborted = $true # Default to true, proven false only on complete file success
-                    
-                    try {
-                        # Ensure parent directory exists before streaming
-                        $parentDir = Split-Path -Path $targetPath -Parent
-                        if (-not (Test-Path -Path $parentDir)) {
-                            $null = New-Item -Path $parentDir -ItemType Directory -Force
-                        }
-
-                        # Open low-level .NET file streams
-                        $sourceStream = [System.IO.File]::OpenRead($item.FullName)
-                        $destStream   = [System.IO.File]::Create($targetPath)
-                        $buffer       = New-Object Byte[] $bufferSize
-
-                        # Read and write in 4MB blocks
-                        while (($bytesRead = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                            $destStream.Write($buffer, 0, $bytesRead)
-                            
-                            $bytesWrittenThisAttempt += $bytesRead
-                            $copiedBytes             += $bytesRead
-
-                            # Calculate progress dynamically mid-file execution
-                            $currentPercent = [math]::Floor(($copiedBytes / $totalBytes) * 100)
-                            $percentBucket  = [math]::Floor($currentPercent / 10) * 10
-                            
-                            if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
-                                # Outputs to Stream 1 (Success). Captured directly by tee
-                                Write-Host ($fmt -f $percentBucket, $copiedBytes, $totalBytes)
-
-                                $lastReportedPercent = $percentBucket
-                            }
-                        }
-
-                        $aborted = $false # Entire file copied without interruption
-                        $success = $true
-                    } catch {
-                        # Rollback global counter for what we wrote during this failed attempt
-                        $copiedBytes -= $bytesWrittenThisAttempt
-
-                        if ($retries -gt 0) {
-                            Start-Sleep -Seconds 1
-                            $retries--
-                        } else {
-                            throw "Native stream copy failed for '$($item.FullName)' to '$targetPath' after retries"
-                        }
-                    } finally {
-                        # CRITICAL: This block executes even if the pipeline is halted via Ctrl+C
-                        if ($sourceStream) { $sourceStream.Close(); $sourceStream.Dispose() }
-                        if ($destStream)   { $destStream.Close(); $destStream.Dispose() }
-                        
-                        # If an error occurred or user issued Ctrl+C, delete the incomplete file
-                        if ($aborted -and (Test-Path -Path $targetPath)) {
-                            Remove-Item -Path $targetPath -Force -ErrorAction SilentlyContinue
-                        }
-                    }
-                }
-            }
-        }
+        # Copy it and Stream-FolderCopy will give you a running commentary
+        Stream-FolderCopy $sourceBase $destBase -ShowSourceOnly
     } catch {
         Write-Host "ERROR during ISO extraction: $_"
         # Clean up the partial SrcIsoContent so a re-run starts fresh
@@ -2629,485 +2614,6 @@ function Invoke-PrepDestISO {
 
     Write-Host "PrepDestISO workflow complete"
 }
-# ==============================
-# Driver export
-# ==============================
-function Invoke-DriverWork {
-    $WinpeDriverRoot = $paths.WinpeDriverRoot
-
-    if ($Clean) {
-        Clean-Folder $WinpeDriverRoot
-        return
-    }
-
-    if ($DryRun) {
-        Write-Host "[DryRun] Would run: DISM /export-driver"
-        return
-    }
-
-    Write-Host  "Exporting drivers..."
-    Write-Verbose "Invoke-DriverWork: WinpeDriverRoot='$WinpeDriverRoot'"
-    Ensure-Folder $WinpeDriverRoot
-    $driverArgs = "/online /export-driver /destination:`"$WinpeDriverRoot`""
-    Write-Debug "dism $driverArgs"
-    $p = Start-Process -FilePath $dismExe -ArgumentList $driverArgs -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$WinpeDriverRoot\dism.log"
-    if ($p.ExitCode -ne 0) {
-        Write-Host "ERROR: DISM /export-driver failed (exit $($p.ExitCode)), check $WinpeDriverRoot\dism.log"
-    }
-}
-
-# ==============================
-# Registry export
-# ==============================
-function Invoke-RegWork {
-
-    # An empty list in the Values means work on the entire key
-    $RegistryAddModify = @(
-        @{
-            Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
-            Values = @()
-        },
-        @{
-            Key    = 'HKEY_CLASSES_ROOT\Directory\Background\shell\Windows.ShowFileExtensions'
-            Values = @()
-        },
-        @{
-            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
-            Values = @('LaunchTo',
-                       'Start_IrisRecommendations',
-                       'ShowTaskViewButton',
-                       'HideFileExt',
-                       'SeparateProcess')
-        },
-        @{
-            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\CabinetState'
-            Values = @('FullPath')
-        },
-        @{
-            Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsUpdate\UX\Settings'
-            Values = @('AllowMUUpdateService')
-        },
-        @{
-            Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem'
-            Values = @('LongPathsEnabled')
-        },
-        @{
-            Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power'
-            Values = @('HibernateEnabled')
-        },
-        @{
-            Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
-            Values = @('TaskbarEndTask')
-        }
-    )
-
-    $RegistryRemove = @(
-    )
-
-    $RegistryRoot = $paths.RegistryRoot
-
-    if ($Clean) {
-        Clean-Folder $RegistryRoot
-        return
-    }
-
-    if (-not $DryRun) {
-        Ensure-Folder $RegistryRoot
-    }
-
-    #
-    # HELPERS
-    #
-    function RegSafeName([string]$key) {
-        ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
-    }
-
-    function RegExportEntireKey([string]$key, [string]$dest) {
-        if ($DryRun) {
-            Write-Host "[DryRun] Would export ENTIRE key: $key -> $dest"
-        } else {
-            Write-Host "Export ENTIRE key: $key -> $dest"
-            reg.exe export "$key" "$dest" /y | Out-Null
-        }
-    }
-
-    function RegExportSpecificValues([string]$key, [string]$dest, [object[]]$groups) {
-
-        # Flatten values, skipping null/empty
-        $allValues = @()
-        foreach ($g in $groups) {
-            if (-not $g) { continue }
-            foreach ($v in $g) {
-                if ($null -ne $v -and $v -ne '') { $allValues += $v }
-            }
-        }
-        $allValues = $allValues | Sort-Object -Unique
-
-        if (-not $allValues -or $allValues.Count -eq 0) {
-            Write-Host "No specific values requested for $key, skipping"
-            return
-        }
-
-        if ($DryRun) {
-            Write-Host "[DryRun] Would export values [$($allValues -join ', ')] from $key -> $dest"
-            return
-        }
-
-        Write-Host "Export specific values [$($allValues -join ', ')] from $key -> $dest"
-
-        $query = reg.exe query "$key" /v * 2>$null
-        if (-not $query) {
-            Write-Host "WARNING: No data returned for $key"
-            return
-        }
-
-        $out = New-Object System.Collections.Generic.List[string]
-        $out.Add("Windows Registry Editor Version 5.00")
-        $out.Add("")
-
-        $header = "[" + $key + "]"
-        $out.Add($header)
-
-        foreach ($line in $query) {
-
-            if ($line -match '^\s+([^\s]+)\s+REG_([A-Z0-9_]+)\s+(.*)$') {
-
-                $valName = $matches[1]
-                $type    = $matches[2]
-                $data    = $matches[3]
-
-                if ($allValues -contains $valName) {
-
-                    switch ($type) {
-                        "SZ" {
-                            $regLine = '"' + $valName + '"="' + $data + '"'
-                        }
-                        "DWORD" {
-                            $regLine = '"' + $valName + '"=dword:' + ("{0:x8}" -f [int]$data)
-                        }
-                        default {
-                            $regLine = '"' + $valName + '"="' + $data + '"'
-                        }
-                    }
-
-                    $out.Add($regLine)
-                }
-            }
-        }
-
-        $out.Add("")
-        $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
-    }
-
-    function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
-
-        if ($DryRun) {
-            if (-not $values -or $values.Count -eq 0) {
-                Write-Host "[DryRun] Would delete ENTIRE key: $key"
-            } else {
-                Write-Host "[DryRun] Would delete values [$($values -join ', ')] from $key"
-            }
-            return
-        }
-
-        Write-Host "Appending delete instructions for $key -> $dest"
-
-        $out = New-Object System.Collections.Generic.List[string]
-
-        if (Test-Path $dest) {
-            $existing = Get-Content $dest -Raw
-            foreach ($l in ($existing -split "`r?`n")) { $out.Add($l) }
-        } else {
-            $out.Add("Windows Registry Editor Version 5.00")
-            $out.Add("")
-        }
-
-        if (-not $values -or $values.Count -eq 0) {
-            $line = "[-" + $key + "]"
-            $out.Add($line)
-            $out.Add("")
-        } else {
-            $header = "[" + $key + "]"
-            $out.Add($header)
-
-            foreach ($v in $values) {
-                $line = '"' + $v + '"=-'
-                $out.Add($line)
-            }
-
-            $out.Add("")
-        }
-
-        $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
-    }
-
-    #
-    # PROCESS ADD/MODIFY
-    #
-    foreach ($entry in $RegistryAddModify) {
-
-        $key    = $entry.Key
-        $groups = $entry.Values
-
-        $safe = "AddModify_" + (RegSafeName $key)
-        $dest = Join-Path $RegistryRoot $safe
-
-        # entire key if:
-        # - Values is null/empty, OR
-        # - any inner list is null/empty
-        $hasEntire = $false
-        if (-not $groups -or $groups.Count -eq 0) {
-            $hasEntire = $true
-        } else {
-            foreach ($g in $groups) {
-                if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
-                    $hasEntire = $true
-                    break
-                }
-            }
-        }
-
-        if ($hasEntire) {
-            if ($DryRun) {
-                Write-Host "[DryRun] Would export ENTIRE key: $key -> $dest"
-            } else {
-                RegExportEntireKey $key $dest
-            }
-        } else {
-            RegExportSpecificValues $key $dest $groups
-        }
-    }
-
-    #
-    # PROCESS REMOVE
-    #
-    foreach ($entry in $RegistryRemove) {
-
-        $key    = $entry.Key
-        $groups = $entry.Values
-
-        $safe = "Remove_" + (RegSafeName $key)
-        $dest = Join-Path $RegistryRoot $safe
-
-        $hasEntire = $false
-        if (-not $groups -or $groups.Count -eq 0) {
-            $hasEntire = $true
-        } else {
-            foreach ($g in $groups) {
-                if (-not $g -or ($g -is [System.Array] -and $g.Count -eq 0)) {
-                    $hasEntire = $true
-                    break
-                }
-            }
-        }
-
-        if ($hasEntire) {
-            RegAppendDelete $dest $key @()
-        } else {
-            $allValues = @()
-            foreach ($g in $groups) {
-                if (-not $g) { continue }
-                foreach ($v in $g) {
-                    if ($null -ne $v -and $v -ne '') { $allValues += $v }
-                }
-            }
-            $allValues = $allValues | Sort-Object -Unique
-
-            RegAppendDelete $dest $key $allValues
-        }
-    }
-}
-
-# ==============================
-# InstallDrivers.cmd
-# ==============================
-function Write-InstallDriversCmd {
-
-    $path = $paths.InstallDriversCmd
-
-    $template = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-:: Must be run elevated to work
-
-echo Import drivers
-pnputil /add-driver "%SRC%\{0}\*.inf" /subdirs /install
-endlocal
-'@
-
-    if ($Clean) {
-        Clean-File $path
-    } elseif ($DryRun) {
-        Write-Host "[DryRun] Would write: $path"
-    } else {
-        Write-Host "Writing: $path"
-        Ensure-Folder (Split-Path $path -Parent)
-
-        $content = $template -f $names.WinpeDriver
-        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-    }
-}
-
-# ==============================
-# InstallRegs.cmd
-# ==============================
-function Write-InstallRegsCmd {
-
-    $path = $paths.InstallRegsCmd
-
-    $template = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-
-echo Import registry files
-for %%F in ("%SRC%\{0}\*.reg") do (
-    reg.exe import "%%F"
-)
-endlocal
-'@
-
-    if ($Clean) {
-        Clean-File $path
-    } elseif ($DryRun) {
-        Write-Host "[DryRun] Would write: $path"
-    } else {
-        Write-Host "Writing: $path"
-        Ensure-Folder (Split-Path $path -Parent)
-
-        $osContent = ""
-        foreach ($u in $kbDirs) {
-            $osContent += $osTemplate -f $names.KBs, $names.$u
-        }
-        $content = $template -f $names.Registry
-        Set-Content -LiteralPath $path -Value $content -Encoding ASCII
-    }
-}
-
-# ==============================
-# SetupConfig files
-# ==============================
-function Write-SetupConfigFiles {
-    $cleanPath   = $paths.SetupConfigCleanIni
-    $upgradePath = $paths.SetupConfigUpgradeIni
-
-<#
-    $cleanTemplate = @'
-# Clean installation configuration
-[SetupConfig]
-
-# Perform a clean installation
-Auto=Clean
-
-# Disable Dynamic Update (no online updates or drivers)
-DynamicUpdate=Disable
-
-# Prevent Setup from injecting drivers automatically
-InstallDrivers=Off
-
-# Show the full Out-of-Box Experience (OOBE)
-ShowOOBE=Full
-
-# Disable Setup telemetry
-Telemetry=Disable
-
-'@
-
-    $upgradeTemplate = @'
-# Upgrade installation configuration
-[SetupConfig]
-
-# Perform an in-place upgrade
-Auto=Upgrade
-
-# Disable Dynamic Update (no online updates or drivers)
-DynamicUpdate=Disable
-
-# Prevent Setup from injecting drivers automatically
-InstallDrivers=Off
-
-# Do not show the Out-of-Box Experience (OOBE)
-ShowOOBE=None
-
-# Disable Setup telemetry
-Telemetry=Disable
-
-'@
-#>
-    $cleanTemplate = @'
-[SetupConfig]
-Auto=Clean
-DynamicUpdate=Disable
-Telemetry=Disable
-'@
-
-    $upgradeTemplate = @'
-[SetupConfig]
-Auto=Upgrade
-DynamicUpdate=Disable
-Telemetry=Disable
-'@
-
-
-    if ($Clean) {
-        Clean-File $cleanPath
-        Clean-File $upgradePath
-    } elseif ($DryRun) {
-        Write-Host "[DryRun] Would write: $cleanPath"
-        Write-Host "[DryRun] Would write: $upgradePath"
-    } else {
-        Write-Host "Writing: $cleanPath"
-        Set-Content -LiteralPath $cleanPath   -Value $cleanTemplate   -Encoding ASCII
-        Write-Host "Writing: $upgradePath"
-        Set-Content -LiteralPath $upgradePath -Value $upgradeTemplate -Encoding ASCII
-    }
-}
-
-# ==============================
-# Setup CMD Files
-# ==============================
-function Write-SetupCmdFiles {
-    $cleanPath   = $paths.CleanInstallCmd
-    $upgradePath = $paths.UpgradeCmd
-
-    $cleanTemplate = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-echo WARNING: This will start a CLEAN install (wipe-and-load) when run from within Windows.
-echo Close all apps and ensure you have backups.
-echo.
-"%SRC%setup.exe" /auto clean /eula accept /configfile "%SRC%{0}"
-endlocal
-'@
-
-    $upgradeTemplate = @'
-@echo off
-setlocal
-set "SRC=%~dp0"
-echo Running in-place upgrade from: %SRC%
-"%SRC%setup.exe" /auto upgrade /eula accept /configfile "%SRC%{0}"
-endlocal
-'@
-
-    if ($Clean) {
-        Clean-File $cleanPath
-        Clean-File $upgradePath
-    } elseif ($DryRun) {
-        Write-Host "[DryRun] Would write: $cleanPath"
-        Write-Host "[DryRun] Would write: $upgradePath"
-    } else {
-        # Fill in the actual name for the files in the template
-        $cleanContent   = $cleanTemplate -f $names.SetupConfigCleanIni
-        $upgradeContent = $upgradeTemplate -f $names.SetupConfigUpgradeIni
-
-        Write-Host "Writing: $cleanPath"
-        Set-Content -LiteralPath $cleanPath   -Value $cleanContent   -Encoding ASCII
-        Write-Host "Writing: $upgradePath"
-        Set-Content -LiteralPath $upgradePath -Value $upgradeContent -Encoding ASCII
-    }
-}
 
 # ==============================
 # File work for the destination ISO
@@ -3117,13 +2623,59 @@ function Invoke-FilesWork {
     [CmdletBinding()]
     param()
 
-<#
     Write-Host "Starting Files workflow..."
-    Write-InstallDriversCmd
-    Write-InstallRegsCmd
-    Write-SetupConfigFiles
-    Write-SetupCmdFiles
-#>
+
+    $requiredFolders = $(
+        $paths.WinpeDriverRoot
+        $paths.RegistryRoot
+        $paths.KBsInDest
+        $paths.ScriptsInDest
+    )
+
+    $requiredFiles = $(
+        $names.ExportDriversCmd
+        $names.InstallDriversCmd
+        $names.ExportRegsCmd
+        $names.ExportRegsPs1
+        $names.InstallRegsCmd
+        $names.SetupConfigCleanIni
+        $names.SetupConfigUpgradeIni
+        $names.CleanInstallCmd
+        $names.UpgradeCmd
+        $names.PostSetupCmd
+    )
+
+    $specialFiles = $(
+        $names.SetupCompleteCmd
+    )
+
+    $From  = $Folder
+    $To    = $paths.DestIsoContent
+    $SpcTo = $paths.ScriptsInDest
+
+    $requiredFrom = foreach ($u in $requiredFiles) { Join-Path $From  $u }
+    $requiredTo   = foreach ($u in $requiredFiles) { Join-Path $To    $u }
+    $specialTo    = foreach ($u in $specialFiles)  { Join-Path $SpcTo $u }
+
+    if (Report-Missing -Required $requiredFrom) {
+        throw "Boot files are missing from $From"
+    }
+
+    if ($Clean) {
+        foreach ($c in $requiredFolders) { Clean-Folder $(FolderRelName $c) }
+        foreach ($c in $requiredTo)      { Clean-File   $(FolderRelName $c) }
+        foreach ($c in $specialTo)       { Clean-File   $(FolderRelName $c) }
+    } elseif ($DryRun) {
+        foreach ($d in $requiredFolders) { Write-Host "[DryRun] Would create: $(FolderRelName $d)" }
+        foreach ($d in $requiredTo)      { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
+        foreach ($d in $specialTo)       { Write-Host "[DryRun] Would write : $(FolderRelName $d)" }
+    } else {
+        foreach ($f in $requiredFolders) { Ensure-Folder $f }
+        foreach ($f in $requiredFiles)   { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $To    $f) -NoComplete }
+        foreach ($f in $specialFiles)    { Stream-FileCopy -SourcePath (Join-Path $From $f) -DestinationPath (Join-Path $SpcTo $f) -NoComplete }
+    }
+
+    Write-Host "Files workflow complete"
 }
 
 # ==============================
@@ -3326,15 +2878,11 @@ $paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.WinpeDriverRoot       = Join-Path $Folder $names.WinpeDriver
-$paths.RegistryRoot          = Join-Path $Folder $names.Registry
-$paths.InstallDriversCmd     = Join-Path $Folder $names.InstallDriversCmd
-$paths.InstallRegsCmd        = Join-Path $Folder $names.InstallRegsCmd
-$paths.SetupConfigCleanIni   = Join-Path $Folder $names.SetupConfigCleanIni
-$paths.SetupConfigUpgradeIni = Join-Path $Folder $names.SetupConfigUpgradeIni
-$paths.CleanInstallCmd       = Join-Path $Folder $names.CleanInstallCmd
-$paths.UpgradeCmd            = Join-Path $Folder $names.UpgradeCmd
-$paths.WinreWimInWim         = Join-Path "Windows\System32\Recovery" $names.WinreWim
+$paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
+$paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
+$paths.KBsInDest             = Join-Path $paths.DestIsoContent $names.KBs
+$paths.ScriptsInDest         = Join-Path $paths.SourcesInDest '$OEM$\$$\Setup\Scripts'
+$paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
     $paths["KBs$u"]          = Join-Path $paths.KBsRoot $names.$u
@@ -3632,8 +3180,6 @@ try {
     if ($Service)   { Invoke-ServiceWork }
     if ($Final)     { Invoke-FinalAssembly }
     if ($Prep)      { Invoke-PrepDestISO }
-    if ($Drivers)   { Invoke-DriverWork }
-    if ($Reg)       { Invoke-RegWork }
     if ($Files)     { Invoke-FilesWork }
     if ($CreateISO) { Invoke-CreateISOWork }
 
