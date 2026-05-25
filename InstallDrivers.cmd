@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "SRC=%~dp0"
-set "FLD=$WinpeDriver$"
+set "FLD=$WinPEDriver$"
 set "DRIVERDIR=%SRC%%FLD%"
 
 if not exist "%DRIVERDIR%" (

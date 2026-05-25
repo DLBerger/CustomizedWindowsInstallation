@@ -2,7 +2,7 @@
 :: Must be run elevated to work
 setlocal
 set "SRC=%~dp0"
-set "FLD=$WinpeDriver$"
+set "FLD=$WinPEDriver$"
 
 :: Ensure the output folder exists and create if necessary
 if not exist "%SRC%%FLD%" mkdir "%SRC%%FLD%"

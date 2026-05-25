@@ -9,7 +9,7 @@ containing official Windows installation media (Windows 10 22H2+ or Windows 11 2
 
 It supports:
 - Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog.
-- Exporting all third-party drivers from the current system into $WinpeDriver$.
+- Exporting all third-party drivers from the current system into $WinPEDriver$.
 - Exporting registry keys into .reg files.
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
@@ -136,7 +136,7 @@ Instead, accumulate results in a list and output the list at the end of the loop
 
 param(
     [Parameter(Position = 0)]
-    [string]$Folder,
+    [string]$Folder = '.\',   # Default is the current working directory
 
     [Parameter(Position = 1)]
     [string]$ISO,
@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "887cda2"
+$GitHash = "ad03d47"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -222,7 +222,7 @@ $names = [ordered]@{
     DestIso               = 'DestISO'
     KBs                   = 'KBs'
     Wims                  = 'Wims'
-    WinpeDriver           = '$WinpeDriver$'
+    WinPEDriver           = '$WinPEDriver$'
     Registry              = 'Registry'
     Content               = 'Content'
     Sources               = 'sources'
@@ -242,12 +242,12 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
-    SetupCompleteCmd      = 'SetupComplete.cmd'
     UpdateNETCmd          = 'Update.NET.cmd'
     UpdateNETPs1          = 'Update.NET.ps1'
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
+    Unknown               = 'unknown'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -285,6 +285,18 @@ Write-Debug "ProgressPreference set to 'SilentlyContinue'"
 # Helper functions
 # ==============================
 
+function Resolve-FullPath {
+    param([string]$Path)
+
+    # Absolute path? Normalize and return.
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    # Relative path? Resolve against the shell's working directory.
+    return [System.IO.Path]::GetFullPath((Join-Path $PWD.ProviderPath $Path))
+}
+
 function FolderRelName {
     param(
         [Parameter(Mandatory = $true)]
@@ -305,7 +317,7 @@ function FolderRelName {
 }
 
 function Protect-Token([string]$s) {
-  if (-not $s) { return "unknown" }
+  if (-not $s) { return $names.Unknown }
   $t = $s -replace '[^\w\.-]+','_'
   $t = $t -replace '_+','_'
   return $t.Trim('_')
@@ -2597,9 +2609,8 @@ function Invoke-FilesWork {
 
     # Lists
     $destFolders = $(
-        $paths.WinpeDriverRoot
+        $paths.WinPEDriverRoot
         $paths.RegistryRoot
-        $paths.OEMInDest
     )
 
     $requiredFiles = $(
@@ -2616,10 +2627,6 @@ function Invoke-FilesWork {
         $names.UpdateNETPs1
     )
 
-    $scriptsFiles = $(
-        $names.SetupCompleteCmd
-    )
-
     # Copy these KBs folders, if they exist
     $maybeKBs = $(
         $names.NET
@@ -2631,10 +2638,10 @@ function Invoke-FilesWork {
     # **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
     $transforms = @(
         @($names.ExportDriversCmd, @(
-            @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+            @('set "FLD=$WinPEDriver$"', $names.WinPEDriver)
         )),
         @($names.InstallDriversCmd, @(
-            @('set "FLD=$WinpeDriver$"', $names.WinpeDriver)
+            @('set "FLD=$WinPEDriver$"', $names.WinPEDriver)
         )),
         @($names.ExportRegsPs1, @(
             @('set "FLD=Registry"', $names.Registry)
@@ -2664,10 +2671,6 @@ function Invoke-FilesWork {
 
     foreach ($f in $requiredFiles) {
         $jobs += [ordered]@{ Action = 'FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.DestIsoContent $f) }
-    }
-
-    foreach ($f in $scriptsFiles) {
-        $jobs += [ordered]@{ Action = 'SubFileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.ScriptsInOEM $f) }
     }
 
     $addedEnsure = $false
@@ -2777,7 +2780,10 @@ function Invoke-CreateISOWork {
         throw "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
     }
 
-    $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
+    $IsoVolumeLabel = Protect-Token ([System.IO.Path]::GetFileNameWithoutExtension($DestISO))
+    if ($IsoVolumeLabel -eq $names.Unknown) {
+        $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
+    }
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
 
     # Build argument list for oscdimg
@@ -2881,14 +2887,12 @@ if ($Usage) {
     exit
 }
 
-# Apply folder default
-if (-not $Folder) { $Folder = (Get-Location).ProviderPath }
-
 # ==============================
 # Resolve working folder
 # ==============================
-$Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
-Write-Verbose "Resolved working folder: $Folder"
+Write-Host "Working folder: $Folder"
+$Folder = Resolve-FullPath $Folder
+Write-Host "Resolved working folder: $Folder"
 
 # ==============================
 # Resolve DISM and oscdimg
@@ -2932,10 +2936,8 @@ $paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
+$paths.WinPEDriverRoot       = Join-Path $paths.DestIsoContent $names.WinPEDriver
 $paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
-$paths.OEMInDest             = Join-Path $paths.SourcesInDest '$OEM$'
-$paths.ScriptsInOEM          = Join-Path $paths.OEMInDest '$$\Setup\Scripts'
 $paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
@@ -2979,7 +2981,7 @@ if (-not $ISO) {
 }
 
 if ($ISO -and (Test-Path $ISO)) {
-    $ISO = (Resolve-Path -LiteralPath $ISO).ProviderPath
+    $ISO = Resolve-FullPath $ISO
     Write-Verbose (&$LeadIn "Resolved ISO path" "$ISO")
 }
 
@@ -2988,8 +2990,9 @@ if ($ISO -and (Test-Path $ISO)) {
 # ==============================
 if (-not $DestISO -and $ISO) {
     $DestISO = $ISO -replace '\.iso$', '_KBs.iso'
-    Write-Verbose (&$LeadIn "Auto-derived DestISO" "$DestISO")
+    Write-Host (&$LeadIn "Auto-derived DestISO" "$DestISO")
 }
+$DestISO = Resolve-FullPath $DestISO
 
 if (-not $DryRun -and -not $Clean) {
     # ==============================
@@ -3145,9 +3148,8 @@ if ($All -or $Most -or (-not $workSwitches)) {
     }
 }
 
-Write-Host (&$LeadIn "Auto-derived DestISO" "$DestISO")
 Write-Host (&$LeadIn "Target profile" "Windows $WinOS $Version $Arch")
-Write-Host (&$LeadIn "Root folder" "$Folder")
+Write-Host (&$LeadIn "Working folder" "$Folder")
 Write-Host (&$LeadIn "ISO" "$(if ($ISO) { $ISO } else { '(none)' })")
 Write-Host (&$LeadIn "DestISO" "$(if ($DestISO) { $DestISO } else { '(none)' })")
 Write-Host (&$LeadIn "Selected indices" "$(if ($InstallIndices.Count -gt 0) { $InstallIndices.Index -join ', ' } else { 'all (determined at export time)' })")
