@@ -1,9 +1,7 @@
-BEGINNING OF FILE
 RESET TASK CONTEXT
 If you do not see a corresponding END OF FILE at the very end of this,
 then you do not have the complete information, you shall fail immediately
 and report the failure
-
 GLOBAL RULES
 # - Process sections strictly in the order they appear in the file
 # - Execution order is DATA then CS blocks then TK blocks then FINAL INSTRUCTIONS
@@ -49,13 +47,12 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
-    PostSetupCmd          = 'PostSetup.cmd'
-    SetupCompleteCmd      = 'SetupComplete.cmd'
     UpdateNETCmd          = 'Update.NET.cmd'
     UpdateNETPs1          = 'Update.NET.ps1'
     MetadataJson          = 'wim-metadata.json'
     ManifestJson          = 'manifest.json'
     ExtractJson           = 'extract.json'
+    Unknown               = 'unknown'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -90,7 +87,6 @@ $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
 $paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
-$paths.ScriptsInDest         = Join-Path $paths.SourcesInDest '$OEM$\$$\Setup\Scripts'
 $paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
