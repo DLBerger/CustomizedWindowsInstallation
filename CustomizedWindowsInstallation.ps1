@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "ad03d47"
+$GitHash = "986f5f6"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -2890,9 +2890,9 @@ if ($Usage) {
 # ==============================
 # Resolve working folder
 # ==============================
-Write-Host "Working folder: $Folder"
+Write-Verbose "Working folder: $Folder"
 $Folder = Resolve-FullPath $Folder
-Write-Host "Resolved working folder: $Folder"
+Write-Verbose "Resolved working folder: $Folder"
 
 # ==============================
 # Resolve DISM and oscdimg
