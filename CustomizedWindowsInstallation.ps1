@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "260826f"
+$GitHash = "887cda2"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -242,7 +242,6 @@ $names = [ordered]@{
     SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
     CleanInstallCmd       = 'CleanInstall.cmd'
     UpgradeCmd            = 'Upgrade.cmd'
-    PostSetupCmd          = 'PostSetup.cmd'
     SetupCompleteCmd      = 'SetupComplete.cmd'
     UpdateNETCmd          = 'Update.NET.cmd'
     UpdateNETPs1          = 'Update.NET.ps1'
@@ -394,10 +393,11 @@ function Clean-File {
     )
 
     if ($Clean) {
+        $relPath = $(FolderRelName $Path)
         if ($DryRun) {
-            Write-Host "[DryRun] Would remove file  : $Path"
-        } elseif (Test-Path $path) {
-            Write-Host "Removing file  : $($Path)"
+            Write-Host "[DryRun] Would remove file  : $relPath"
+        } elseif (Test-Path $Path) {
+            Write-Host "Removing file  : $relPath"
             Remove-Item $Path -Force -ErrorAction SilentlyContinue
         }
     }
@@ -411,10 +411,11 @@ function Clean-Folder {
     )
 
     if ($Clean) {
+        $relPath = $(FolderRelName $Path)
         if ($DryRun) {
-            Write-Host "[DryRun] Would remove folder: $Path"
+            Write-Host "[DryRun] Would remove folder: $relPath"
         } elseif (Test-Path $Path) {
-            Write-Host "Removing folder: $($Path)"
+            Write-Host "Removing folder: $relPath"
             Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -2598,7 +2599,7 @@ function Invoke-FilesWork {
     $destFolders = $(
         $paths.WinpeDriverRoot
         $paths.RegistryRoot
-        $paths.ScriptsInDest
+        $paths.OEMInDest
     )
 
     $requiredFiles = $(
@@ -2658,15 +2659,15 @@ function Invoke-FilesWork {
     $jobs = @()
 
     foreach ($f in $destFolders) {
-        $jobs += [ordered]@{ Action = 'Ensure-Folder'; From = ''; To = $f }
+        $jobs += [ordered]@{ Action = 'Folder'; From = $null; To = $f }
     }
 
     foreach ($f in $requiredFiles) {
-        $jobs += [ordered]@{ Action = 'Stream-FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.DestIsoContent $f) }
+        $jobs += [ordered]@{ Action = 'FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.DestIsoContent $f) }
     }
 
     foreach ($f in $scriptsFiles) {
-        $jobs += [ordered]@{ Action = 'Stream-FileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.ScriptsInDest $f) }
+        $jobs += [ordered]@{ Action = 'SubFileCopy'; From = (Join-Path $Folder $f); To = (Join-Path $paths.ScriptsInOEM $f) }
     }
 
     $addedEnsure = $false
@@ -2675,10 +2676,10 @@ function Invoke-FilesWork {
         if (Test-Path $src) {
             if (-not $addedEnsure) {
                 $addedEnsure = $true
-                $jobs += [ordered]@{ Action = 'Ensure-Folder'; From = ""; To = $paths.KBsInDest }
+                $jobs += [ordered]@{ Action = 'Folder'; From = $null; To = $paths.KBsInDest }
             }
             $dst = Join-Path $paths.KBsInDest $kb
-            $jobs += [ordered]@{ Action = 'Stream-FolderCopy'; From = $src; To = $dst }
+            $jobs += [ordered]@{ Action = 'SubFolderCopy'; From = $src; To = $dst }
         }
     }
 
@@ -2688,13 +2689,13 @@ function Invoke-FilesWork {
         $w = ($jobs.Action | Measure-Object -Maximum -Property Length).Maximum
         foreach ($j in $jobs) {
             $a = $j.Action.PadLeft($w)
-            Write-Debug ("  {0} {1}" -f $a, ($j.From, $j.To -join " "))
+            Write-Debug ("  {0}{1}{2} {3}" -f $a, $(if ($j.From) { " " } else { "" }), $j.From, $j.To)
         }
     }
 
     # Missing-file check
     $missing = $jobs |
-        Where-Object   { $_.Action -eq 'Stream-FileCopy' } |
+        Where-Object   { $_.Action -like '*FileCopy' } |
         ForEach-Object { $_.From }
 
     if (Report-Missing -Required $missing) {
@@ -2704,23 +2705,29 @@ function Invoke-FilesWork {
     # Execute each job
     foreach ($j in $jobs) {
         switch ($j.Action) {
-            'Ensure-Folder' {
-                if     ($Clean)  { Clean-Folder (FolderRelName $j.To) }
+            'Folder' {
+                if     ($Clean)  { Clean-Folder $j.To }
                 elseif ($DryRun) { Write-Host "[DryRun] Would create: $(FolderRelName $j.To)" }
                 else             { Ensure-Folder $j.To }
             }
-            'Stream-FileCopy' {
-                if     ($Clean)  { Clean-File (FolderRelName $j.To) }
+            'FileCopy' {
+                if     ($Clean)  { Clean-File $j.To }
                 elseif ($DryRun) { Write-Host "[DryRun] Would write : $(FolderRelName $j.To)" }
                 else             { Stream-FileCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
             }
-            'Stream-FolderCopy' {
-                if     ($Clean)  { Clean-File (FolderRelName $j.To) }
+            'SubFileCopy' {
+                if     ($Clean)  { <# Parent folder already deleted #>}
+                elseif ($DryRun) { Write-Host "[DryRun] Would write : $(FolderRelName $j.To)" }
+                else             { Stream-FileCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
+            }
+            'SubFolderCopy' {
+                if     ($Clean)  { <# Parent folder already deleted #>}
                 elseif ($DryRun) { Write-Host "[DryRun] Would copy  : $(FolderRelName $j.From) to $(FolderRelName $j.To)" }
                 else             { Stream-FolderCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
             }
         }
     }
+
 
     Write-Host "Files workflow complete"
 }
@@ -2927,7 +2934,8 @@ $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
 $paths.WinpeDriverRoot       = Join-Path $paths.DestIsoContent $names.WinpeDriver
 $paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
-$paths.ScriptsInDest         = Join-Path $paths.SourcesInDest '$OEM$\$$\Setup\Scripts'
+$paths.OEMInDest             = Join-Path $paths.SourcesInDest '$OEM$'
+$paths.ScriptsInOEM          = Join-Path $paths.OEMInDest '$$\Setup\Scripts'
 $paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs
 foreach ($u in $kbDirs) {
