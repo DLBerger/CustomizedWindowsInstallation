@@ -200,13 +200,24 @@ param(
 )
 
 # git hash
-$GitHash = "986f5f6"
+$GitHash = "c44f431"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
 
+# Retry count for IO operations (file copy, download, etc.)
+$MaxIORetries = 3
+
+# Chunk buffers for optimal performance
+$BufferSize = 64MB
+
 # Calculate the current percentage progress bucket
-$Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes) $(if ($CopiedBytes -eq 0) { -1 } else { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / 10) * 10 }) }
+$ProgressPrecentage = 10 # Report progress in 10% increments
+$PercentWidth       = 3  # Always 0–100
+$Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes)
+            $(if   ($CopiedBytes -eq 0) { -1 }
+              else                      { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / $ProgressPrecentage) * $ProgressPrecentage })
+         }
 
 # Hex converter to string.  Write-xxxx ($(& $Hex $rc))
 $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
@@ -214,9 +225,7 @@ $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
 # Final compression type
 $DismCompression = 'max' # none, fast, max
 
-# ==============================
-# Core names
-# ==============================
+# Core names begin
 $names = [ordered]@{
     SrcIso                = 'SrcISO'
     DestIso               = 'DestISO'
@@ -259,6 +268,7 @@ $wimDirs = @('Indices', 'Mounts', 'Serviced', 'Final', 'Scratch', 'Logs')
 foreach ($u in $wimDirs) {
     $names[$u] = $u
 }
+# Core names end
 
 # Ensure elevated
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -284,6 +294,16 @@ Write-Debug "ProgressPreference set to 'SilentlyContinue'"
 # ==============================
 # Helper functions
 # ==============================
+
+<#
+function RoundUp ([double]$number, [int]$ratio) {
+    return [math]::Ceiling($number / $ratio) * $ratio
+}
+
+function RoundDown ([double]$number, [int]$ratio) {
+    return [math]::Floor($number / $ratio) * $ratio
+}
+#>
 
 function Resolve-FullPath {
     param([string]$Path)
@@ -471,23 +491,21 @@ function Stream-FileCopy {
 
     # Build dynamic format string for progress output, aligning byte counts to the right based on the total size
     $maxBytesWidth = $TotalBytes.ToString("N0").Length
-    $percentWidth  = 3   # always 0–100
-    $fmt = "Progress: {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
+    $fmt           = "Progress: {0,$($PercentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
     $lastReportedPercent = (&$Bucket $CopiedBytes $TotalBytes)
-    $bufferSize = 4MB # chunk buffers for optimal performance
 
     # Progress?
     $doProgress = ((-not $NoProgress) -and                                                   # No output wanted
                    (
-                     ($fileBytes -gt (4 * $buffersize)) -or                                  # Large file
+                     ($fileBytes -gt $BufferSize) -or                                        # Large file
                      (-not (($CopiedBytes -eq 0) -and ($fileBytes -eq $TotalBytes))) -or     # Not a single file
                      (($CopiedBytes -ne 0) -and ($CopiedBytes + $fileBytes) -ge $TotalBytes) # Last file of a series of files
                    )
                   )
 
     # Robocopy-like retry behavior
-    $retries = 2
+    $retries = $MaxIORetries
     $success = $false
 
     if (-not $NoTitle) { Write-Host ("Copying {0}{1}" -f (FolderRelName $SourcePath), $(if ($ShowSourceOnly) { "" } else { " to $(FolderRelName $DestinationPath)" })) }
@@ -503,7 +521,7 @@ function Stream-FileCopy {
             # -----------------------------
             $sourceStream = [System.IO.File]::OpenRead($SourcePath)
             $destStream   = [System.IO.File]::Create($DestinationPath)
-            $buffer       = New-Object byte[] $bufferSize
+            $buffer       = New-Object byte[] $BufferSize
 
             # -----------------------------
             # STREAM COPY LOOP
@@ -1405,10 +1423,10 @@ function Search-UpdateCatalogHtml {
 #   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
 
     # Look for goToDetails('GUID')
-    $pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-    $matches = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
+    $pattern   = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
+    $matchList = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
     $ids = @()
-    foreach ($m in $matches) {
+    foreach ($m in $matchList) {
         $id = $m.Groups[1].Value
         Write-Debug "Found update GUID: $id"
         $ids += [PSCustomObject]@{
@@ -1474,22 +1492,22 @@ function Get-UpdateLinks {
     Write-Verbose "Running regex against DownloadDialog content"
     Write-Debug   "Regex pattern: $pattern"
 
-    $matches = [regex]::Matches(
+    $matchList = [regex]::Matches(
         $content,
         $pattern,
         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
 
-    if ($matches.Count -eq 0) {
+    if ($matchList.Count -eq 0) {
         Write-Warning "No downloadInformation URL matches for $Guid (regex returned 0 matches)"
         return @()
     }
 
-    Write-Verbose "Found $($matches.Count) download link match(es)"
+    Write-Verbose "Found $($matchList.Count) download link match(es)"
 
     $links = @()
     try {
-        foreach ($m in $matches) {
+        foreach ($m in $matchList) {
             $downloadInfoIndex = [int]$m.Groups[1].Value
             $fileIndex         = [int]$m.Groups[2].Value
             $url               = $m.Groups[3].Value
@@ -1630,14 +1648,13 @@ function Download-MUFile {
         Write-Host ("Downloading {0}..." -f $fileName)
 
         # ------------------------------------------------------------
-        # Retry loop (3 attempts)
+        # Retry loop
         # ------------------------------------------------------------
-        $maxRetries = 3
         $success = $false
 
-        for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        for ($attempt = 1; $attempt -le $MaxIORetries; $attempt++) {
 
-            Write-Host ("  Attempt {0} of {1}" -f $attempt, $maxRetries)
+            Write-Host ("  Attempt {0} of {1}" -f $attempt, $MaxIORetries)
 
             try {
                 $req = [System.Net.HttpWebRequest]::Create($url)
@@ -1649,16 +1666,15 @@ function Download-MUFile {
                 $inStream  = $resp.GetResponseStream()
                 $outStream = [System.IO.File]::Open($destPath, [System.IO.FileMode]::Create)
 
-                $buffer = New-Object byte[] 65536
+                $buffer = New-Object byte[] $BufferSize
                 $totalRead = 0
-                $nextMark = 10
+                $nextMark = $ProgressPercentage
 
                 # Compute max widths
                 $maxBytesWidth = $total.ToString("N0").Length
-                $percentWidth  = 3
 
                 # Build dynamic format string
-                $fmt = " {0,$($percentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
+                $fmt = " {0,$($PercentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
 
                 # Initial progress line
                 Write-Host ($fmt -f 0, 0, $total)
@@ -1672,7 +1688,7 @@ function Download-MUFile {
 
                         if ($pct -ge $nextMark) {
                             Write-Host ($fmt -f $pct, $totalRead, $total)
-                            $nextMark += 10
+                            $nextMark += $ProgressPrecentage
                         }
                     }
                 }
@@ -1697,7 +1713,7 @@ function Download-MUFile {
         }
 
         if (-not $success) {
-            Write-Warning ("FAILED after {0} attempts: {1}" -f $maxRetries, $fileName)
+            Write-Warning ("FAILED after {0} attempts: {1}" -f $MaxIORetries, $fileName)
             continue
         }
 
@@ -2116,6 +2132,10 @@ function Invoke-ServiceWork {
             $effectiveDest = $Dest
         }
 
+        # Collect for debugging/logging
+        $relMountDir      = FolderRelName $MountDir
+        $relEffectiveDest = FolderRelName $effectiveDest
+
         # We can bail early if there are no packages to apply if there are no packages to apply on we're mounting and dismounting
         $hasPkgs = $Pkgs -and $Pkgs.Count -gt 0
         if (-not $hasPkgs -and $Mount -and $Unmount) {
@@ -2134,7 +2154,7 @@ function Invoke-ServiceWork {
                 Remove-Folder $scratchDir
                 Ensure-Folder $scratchDir
 
-                Write-Host "  Mounting $effectiveDest -> $MountDir"
+                Write-Host "  Mounting $relEffectiveDest -> $relMountDir"
                 Run-Dism @(
                     "/Mount-Image",
                     "`"/ImageFile:$effectiveDest`"",
@@ -2144,7 +2164,7 @@ function Invoke-ServiceWork {
                     "`"/LogPath:$mountLog`""
                 ) -Indent 2
                 if ($LASTEXITCODE -ne 0) {
-                    throw "DISM mount failed for '$effectiveDest' (exit $(& $Hex $LASTEXITCODE))"
+                    throw "DISM mount failed for '$relEffectiveDest' (exit $(& $Hex $LASTEXITCODE))"
                 }
             }
 
@@ -2175,14 +2195,14 @@ function Invoke-ServiceWork {
             }
 
             if ($Unmount) {
-                Write-Host "  Unmounting $idxName at $MountDir (commit)..."
+                Write-Host "  Unmounting $idxName at $relMountDir (commit)..."
                 Run-Dism @(
                     "/Unmount-Image",
                     "`"/MountDir:$MountDir`"",
                     "/Commit"
                 ) -Indent 2
                 if ($LASTEXITCODE -ne 0) {
-                    throw "DISM unmount (commit) failed for '$MountDir' (exit $(& $Hex $LASTEXITCODE))"
+                    throw "DISM unmount (commit) failed for '$relMountDir' (exit $(& $Hex $LASTEXITCODE))"
                 }
             }
         }
@@ -2416,7 +2436,7 @@ function Invoke-FinalAssembly {
                 '/CheckIntegrity'
             )
 
-            Write-Host "  Adding $WimLabel index $idx from $src"
+            Write-Host "  Adding $WimLabel index $idx from $(FolderRelName $src)"
             Run-Dism ($baseArgs + @("`"/SourceImageFile:$src`"")) -Indent 2
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "ERROR exporting $WimLabel index $idx"
@@ -2459,9 +2479,9 @@ function Invoke-PrepDestISO {
     }
 
     if ($DryRun) {
-        Write-Host "[DryRun] Would hardlink-copy $($paths.SrcIsoContent) -> $($paths.DestIsoContent)"
-        Write-Host "[DryRun] Would copy $($paths.InstallWimInFinal) -> $($paths.InstallWimInDest)"
-        Write-Host "[DryRun] Would copy $($paths.BootWimInFinal)    -> $($paths.BootWimInDest)"
+        Write-Host "[DryRun] Would hardlink-copy $(FolderRelName $paths.SrcIsoContent) -> $(FolderRelName $paths.DestIsoContent)"
+        Write-Host "[DryRun] Would copy $(FolderRelName $paths.InstallWimInFinal) -> $(FolderRelName $paths.InstallWimInDest)"
+        Write-Host "[DryRun] Would copy $(FolderRelName $paths.BootWimInFinal)    -> $(FolderRelName $paths.BootWimInDest)"
         return
     }
 
@@ -2492,7 +2512,7 @@ function Invoke-PrepDestISO {
                 # Any date is never than this
                 return [datetime]::MinValue
             } else {
-                throw "$JsonPath not found or invalid, run -$(Step) first"
+                throw "$(FolderRelName $JsonPath) not found or invalid, run -$(Step) first"
             }
           
         }
@@ -2515,7 +2535,7 @@ function Invoke-PrepDestISO {
     # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
     $prepHardlinkDate = Fetch-Date $prepHardlinkJson
     if ($prepHardlinkDate -le $extractDate) {
-        Write-Host "Hardlink-copying $($paths.SrcIsoContent) -> $($paths.DestIsoContent) (excluding install/boot images)..."
+        Write-Host "Hardlink-copying $(FolderRelName $paths.SrcIsoContent) -> $(FolderRelName $paths.DestIsoContent) (excluding install/boot images)..."
 
         if (Test-Path $paths.DestIsoRoot) {
             Write-Host "Removing existing DestIsoRoot..."
@@ -2572,7 +2592,7 @@ function Invoke-PrepDestISO {
         Write-JsonFile -Path $prepHardlinkJson -Data @{ Date = (Get-Date -Format s) }
         Write-Host "  Hardlink tree complete"
     } else {
-        Write-Host "DestIsoContent hardlink-copy already current ($($prepHardlinkJson): $prepHardlinkDate)"
+        Write-Host "DestIsoContent hardlink-copy already current ($(FolderRelName $prepHardlinkJson): $prepHardlinkDate)"
     }
 
     # ---- Step B: Copy final install.wim ----
@@ -2582,17 +2602,17 @@ function Invoke-PrepDestISO {
         Stream-FileCopy $paths.InstallWimInFinal $paths.InstallWimInDest
         Write-JsonFile -Path $prepInstallWimJson -Data @{ Date = (Get-Date -Format s) }
     } else {
-        Write-Host "$($names.InstallWim) already current ($($prepInstallWimJson): $prepInstallWimDate)"
+        Write-Host "$($names.InstallWim) already current ($(FolderRelName $prepInstallWimJson): $prepInstallWimDate)"
     }
 
     # ---- Step C: Copy final boot.wim ----
     $prepBootWimDate = Fetch-Date $prepBootWimJson
-    if ($prepBootWimDate -le $finalInstallWimDate) {
+    if ($prepBootWimDate -le $finalBootWimDate) {
         # Stream-FileCopy will tell us what it is doing
         Stream-FileCopy $paths.BootWimInFinal $paths.BootWimInDest
         Write-JsonFile -Path $prepBootWimJson -Data @{ Date = (Get-Date -Format s) }
     } else {
-        Write-Host "$($names.BootWim) already current ($($prepBootWimJson): $prepBootWimDate)"
+        Write-Host "$($names.BootWim) already current ($(Resolve-IndexSelection $prepBootWimJson): $prepBootWimDate)"
     }
 
     Write-Host "PrepDestISO workflow complete"
@@ -2747,7 +2767,7 @@ function Invoke-CreateISOWork {
 
     if ($DryRun) {
         Write-Host "[DryRun] Would create ISO: $DestISO"
-        Write-Host "[DryRun]             from: $($paths.DestIsoContent)"
+        Write-Host "[DryRun]             from: $(FolderRelName $paths.DestIsoContent)"
         return
     }
 
@@ -2830,13 +2850,13 @@ function Invoke-CreateISOWork {
 
         # Case 1: Mixed line with prefix + percent, just output the prefix
         if ($line -match "^(\S.*\S)\s+(\d+)% complete$") {
-            Write-Host $matches[1]
+            Write-Host $Matches[1]
             return
         }
 
         # Case 2: Pure progress line
         if ($line -match "^\s*(\d+)% complete$") {
-            $pct = [int]$matches[1]
+            $pct = [int]$Matches[1]
             if ($pct -lt $script:nextMark) { return }
             Write-Host ("Progress: {0}%" -f $pct)
             $script:nextMark += 10
@@ -2913,9 +2933,7 @@ if ($oscdimgExe) {
     Write-Host (&$LeadIn "oscdimg" "not found (ISO creation unavailable, -CreateISO will fail)")
 }
 
-# ==============================
-# Core paths (requires $Folder)
-# ==============================
+# Core paths begin
 $paths = [ordered]@{}
 $paths.BootWimInIso          = Join-Path $names.Sources $names.BootWim
 $paths.InstallEsdInIso       = Join-Path $names.Sources $names.InstallEsd
@@ -2953,9 +2971,9 @@ foreach ($u in $wimDirs) {
 }
 $paths.ExtractJson           = Join-Path $paths.SrcIsoRoot  $names.ExtractJson
 $paths.MetadataJson          = Join-Path $paths.WimsIndices $names.MetadataJson
-$paths.FinalJson             = Join-Path $paths.WimsFinal   $names.FinalJson
 $paths.InstallWimInFinal     = Join-Path $paths.WimsFinal   $names.InstallWim
 $paths.BootWimInFinal        = Join-Path $paths.WimsFinal   $names.BootWim
+# Core paths end
 
 # ==============================
 # Resolve source ISO
@@ -2994,15 +3012,15 @@ if (-not $DestISO -and $ISO) {
 }
 $DestISO = Resolve-FullPath $DestISO
 
+$InstallImages   = @()
+$BootImages      = @()
+$isoMetaResolved = $false
+$MetaSrc         = 'To be determined at export time'
 if (-not $DryRun -and -not $Clean) {
     # ==============================
     # Read ISO / WIM metadata for WinOS / Version / Arch and index list
     # Priority: 1) MetadataJson  2) SrcIsoContent WIMs  3) Mount ISO
     # ==============================
-    $InstallImages   = @()
-    $BootImages      = @()
-    $isoMetaResolved = $false
-    $metaSrc         = $null
 
     # Helper: apply Get-WimMetadata result to the script-scope variables
     function Apply-WimMetadata {
@@ -3033,7 +3051,7 @@ if (-not $DryRun -and -not $Clean) {
             } catch {
                 Write-Warning "Failed to read WIM metadata from '$From': $_"
             }
-            if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $metaSrc = $From }
+            if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $From }
         }
     }
 
@@ -3045,7 +3063,7 @@ if (-not $DryRun -and -not $Clean) {
         $InstallImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
         $BootImages    = @($wimMeta.BootImages    | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
         Apply-WimMetadata $wimMeta
-        if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $metaSrc = $names.MetadataJson }
+        if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $names.MetadataJson }
     }
 
     # 2) Fall back to SrcIsoContent on disk
@@ -3073,7 +3091,7 @@ if (-not $DryRun -and -not $Clean) {
             Try-WimMetadata -InstallWimPath "$metaDrive$($paths.InstallWimInIso)" `
                             -InstallEsdPath "$metaDrive$($paths.InstallEsdInIso)" `
                             -BootWimPath    "$metaDrive$($paths.BootWimInIso)" `
-                            -From "SrcIsoContent"
+                            -From "Mounted ISO"
         } finally {
             if ($metaDiskImg -and $metaDiskImg.Attached) {
                 Write-Verbose "Dismounting ISO..."
@@ -3095,7 +3113,7 @@ if (-not $DryRun -and -not $Clean) {
             Write-Error "Cannot show indices: no metadata available, run -Extract first, or provide -ISO"
             exit 1
         }
-        Write-Host "`nAvailable images in $($names.InstallWim) [source: $metaSrc]:`n"
+        Write-Host "`nAvailable images in $($names.InstallWim) [source: $MetaSrc]:`n"
         Write-Host ("{0,6}  {1}" -f 'Index', 'Name')
         Write-Host ("{0,6}  {1}" -f '------', '----')
         foreach ($img in $InstallImages) { Write-Host ("{0,6}  {1}" -f $img.Index, $img.Name) }
@@ -3152,7 +3170,7 @@ Write-Host (&$LeadIn "Target profile" "Windows $WinOS $Version $Arch")
 Write-Host (&$LeadIn "Working folder" "$Folder")
 Write-Host (&$LeadIn "ISO" "$(if ($ISO) { $ISO } else { '(none)' })")
 Write-Host (&$LeadIn "DestISO" "$(if ($DestISO) { $DestISO } else { '(none)' })")
-Write-Host (&$LeadIn "Selected indices" "$(if ($InstallIndices.Count -gt 0) { $InstallIndices.Index -join ', ' } else { 'all (determined at export time)' })")
+Write-Host (&$LeadIn "Selected indices" "$(if ($InstallIndices.Count -gt 0) { $InstallIndices.Index -join ', ' } else { 'all' }) [source: $MetaSrc]")
 Write-Host (&$LeadIn "Mode" "$($workSwitches -join ', ')")
 if ($Clean)  { Write-Host (&$LeadIn "Clean mode" "Enabled") }
 if ($DryRun) { Write-Host (&$LeadIn "Dry-run mode" "Enabled") }
