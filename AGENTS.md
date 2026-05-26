@@ -10,7 +10,7 @@ The codebase has **no package manager, no build system, and no Docker/container 
 
 ### Development on Linux (Cloud Agent VM)
 
-The scripts **cannot execute end-to-end on Linux** because they depend on Windows-only tools (`dism.exe`, `oscdimg.exe`, `robocopy.exe`) and Windows APIs (e.g., `WindowsPrincipal` admin check). Development on Linux is limited to:
+The scripts **cannot execute end-to-end on Linux** because they depend on Windows-only tools (`dism.exe`, `oscdimg.exe`) and Windows APIs (e.g., `WindowsPrincipal` admin check). Development on Linux is limited to:
 
 - **Linting**: `pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path '<script>.ps1' -Severity Error,Warning"`
 - **Syntax validation**: `pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('<script>.ps1', [ref]\$null, [ref]\$null)"`
