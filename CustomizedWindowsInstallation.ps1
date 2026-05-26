@@ -200,7 +200,7 @@ param(
 )
 
 # git hash
-$GitHash = "c44f431"
+$GitHash = "a4056ae"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -439,7 +439,7 @@ function Clean-Folder {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Path
+        [string]$Path
     )
 
     if ($Clean) {
@@ -2686,7 +2686,7 @@ function Invoke-FilesWork {
     $jobs = @()
 
     foreach ($f in $destFolders) {
-        $jobs += [ordered]@{ Action = 'Folder'; From = $null; To = $f }
+        $jobs += [ordered]@{ Action = 'Folder'; From = $f; To = $null }
     }
 
     foreach ($f in $requiredFiles) {
@@ -2699,7 +2699,7 @@ function Invoke-FilesWork {
         if (Test-Path $src) {
             if (-not $addedEnsure) {
                 $addedEnsure = $true
-                $jobs += [ordered]@{ Action = 'Folder'; From = $null; To = $paths.KBsInDest }
+                $jobs += [ordered]@{ Action = 'Folder'; From = $paths.KBsInDest; To = $null }
             }
             $dst = Join-Path $paths.KBsInDest $kb
             $jobs += [ordered]@{ Action = 'SubFolderCopy'; From = $src; To = $dst }
@@ -2712,7 +2712,7 @@ function Invoke-FilesWork {
         $w = ($jobs.Action | Measure-Object -Maximum -Property Length).Maximum
         foreach ($j in $jobs) {
             $a = $j.Action.PadLeft($w)
-            Write-Debug ("  {0}{1}{2} {3}" -f $a, $(if ($j.From) { " " } else { "" }), $j.From, $j.To)
+            Write-Debug ("  {0} {1} {2}" -f $a, $j.From, $j.To)
         }
     }
 
@@ -2729,9 +2729,9 @@ function Invoke-FilesWork {
     foreach ($j in $jobs) {
         switch ($j.Action) {
             'Folder' {
-                if     ($Clean)  { Clean-Folder $j.To }
-                elseif ($DryRun) { Write-Host "[DryRun] Would create: $(FolderRelName $j.To)" }
-                else             { Ensure-Folder $j.To }
+                if     ($Clean)  { Clean-Folder $j.From }
+                elseif ($DryRun) { Write-Host "[DryRun] Would create: $(FolderRelName $j.From)" }
+                else             { Ensure-Folder $j.From }
             }
             'FileCopy' {
                 if     ($Clean)  { Clean-File $j.To }
@@ -2746,7 +2746,8 @@ function Invoke-FilesWork {
             'SubFolderCopy' {
                 if     ($Clean)  { <# Parent folder already deleted #>}
                 elseif ($DryRun) { Write-Host "[DryRun] Would copy  : $(FolderRelName $j.From) to $(FolderRelName $j.To)" }
-                else             { Stream-FolderCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
+                else             { if (Test-Path $j.To) { Remove-Item $j.To -Recurse -Force -ErrorAction SilentlyContinue }  # Clean out any old files
+                                   Stream-FolderCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete }
             }
         }
     }
@@ -3012,22 +3013,21 @@ if (-not $DestISO -and $ISO) {
 }
 $DestISO = Resolve-FullPath $DestISO
 
+# ==============================
+# Read ISO / WIM metadata for WinOS / Version / Arch and index list
+# Priority: 1) MetadataJson  2) SrcIsoContent WIMs  3) Mount ISO
+# ==============================
 $InstallImages   = @()
 $BootImages      = @()
-$isoMetaResolved = $false
+$IsoMetaResolved = $false
 $MetaSrc         = 'To be determined at export time'
-if (-not $DryRun -and -not $Clean) {
-    # ==============================
-    # Read ISO / WIM metadata for WinOS / Version / Arch and index list
-    # Priority: 1) MetadataJson  2) SrcIsoContent WIMs  3) Mount ISO
-    # ==============================
 
-    # Helper: apply Get-WimMetadata result to the script-scope variables
+    # Helper: apply WimMetadata result to the script-scope variables
     function Apply-WimMetadata {
         param([object]$Meta)
-        if (-not $WinOS)   { $WinOS   = $Meta.WinOS }
-        if (-not $Version) { $Version = $Meta.Version }
-        if (-not $Arch)    { $Arch    = $Meta.Arch }
+        if (-not $script:WinOS)   { $script:WinOS   = $Meta.WinOS }
+        if (-not $script:Version) { $script:Version = $Meta.Version }
+        if (-not $script:Arch)    { $script:Arch    = $Meta.Arch }
     }
     function Try-WimMetadata {
         param([string]$InstallWimPath, [string]$InstallEsdPath, [string]$BootWimPath, [string]$From)
@@ -3042,30 +3042,31 @@ if (-not $DryRun -and -not $Clean) {
                 $metaInstall = Get-WimMetadata -WimPath $InstallWimPath
                 $metaBoot    = Get-WimMetadata -WimPath $BootWimPath
                 if ($metaInstall.InstallImages.Count -gt 0) {
-                    $InstallImages = @($metaInstall.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                    $script:InstallImages = @($metaInstall.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
                     Apply-WimMetadata $metaInstall
                 }
                 if ($metaBoot.BootImages.Count -gt 0) {
-                    $BootImages = @($metaBoot.BootImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                    $script:BootImages = @($metaBoot.BootImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
                 }
             } catch {
                 Write-Warning "Failed to read WIM metadata from '$From': $_"
             }
-            if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $From }
+            if (($script:InstallImages.Count -gt 0) -and ($script:BootImages.Count -gt 0)) { $script:IsoMetaResolved = $true; $script:MetaSrc = $From }
         }
     }
 
-    # 1) Prefer cached MetadataJson if it matches the current ISO
-    $metadataJson = $paths.MetadataJson
-    $wimMeta      = Read-JsonFile -Path $metadataJson
-    if ($wimMeta -and (-not $ISO -or $wimMeta.ISOPath -eq $ISO)) {
-        Write-Verbose "Loading metadata from $metadataJson"
-        $InstallImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-        $BootImages    = @($wimMeta.BootImages    | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-        Apply-WimMetadata $wimMeta
-        if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $names.MetadataJson }
-    }
+# 1) Prefer cached MetadataJson if it matches the current ISO
+$metadataJson = $paths.MetadataJson
+$wimMeta      = Read-JsonFile -Path $metadataJson
+if ($wimMeta -and (-not $ISO -or $wimMeta.ISOPath -eq $ISO)) {
+    Write-Verbose "Loading metadata from $metadataJson"
+    $InstallImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+    $BootImages    = @($wimMeta.BootImages    | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+    Apply-WimMetadata $wimMeta
+    if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $names.MetadataJson }
+}
 
+if (-not $DryRun -and -not $Clean) {
     # 2) Fall back to SrcIsoContent on disk
     if (-not $isoMetaResolved -and (Test-Path $paths.SourcesInSrc)) {
         Try-WimMetadata -InstallWimPath $paths.InstallWimInSrc `
@@ -3099,37 +3100,37 @@ if (-not $DryRun -and -not $Clean) {
             }
         }
     }
+}
 
-    # Hard defaults for anything still unresolved
-    if (-not $WinOS)   { $WinOS   = '11' }
-    if (-not $Arch)    { $Arch    = 'x64' }
-    if (-not $Version) { $Version = if ($WinOS -eq '10') { '22H2' } else { '25H2' } }
+# Hard defaults for anything still unresolved
+if (-not $WinOS)   { $WinOS   = '11' }
+if (-not $Arch)    { $Arch    = 'x64' }
+if (-not $Version) { $Version = if ($WinOS -eq '10') { '22H2' } else { '25H2' } }
 
-    # ==============================
-    # ShowIndices
-    # ==============================
-    if ($ShowIndices) {
-        if ($InstallImages.Count -eq 0) {
-            Write-Error "Cannot show indices: no metadata available, run -Extract first, or provide -ISO"
-            exit 1
-        }
-        Write-Host "`nAvailable images in $($names.InstallWim) [source: $MetaSrc]:`n"
-        Write-Host ("{0,6}  {1}" -f 'Index', 'Name')
-        Write-Host ("{0,6}  {1}" -f '------', '----')
-        foreach ($img in $InstallImages) { Write-Host ("{0,6}  {1}" -f $img.Index, $img.Name) }
-        Write-Host ""
-        exit 0
+# ==============================
+# ShowIndices
+# ==============================
+if ($ShowIndices) {
+    if ($InstallImages.Count -eq 0) {
+        Write-Error "Cannot show indices: no metadata available, run -Extract first, or provide -ISO"
+        exit 1
     }
+    Write-Host "`nAvailable images in $($names.InstallWim) [source: $MetaSrc]:`n"
+    Write-Host ("{0,6}  {1}" -f 'Index', 'Name')
+    Write-Host ("{0,6}  {1}" -f '------', '----')
+    foreach ($img in $InstallImages) { Write-Host ("{0,6}  {1}" -f $img.Index, $img.Name) }
+    Write-Host ""
+    exit 0
+}
 
-    # ==============================
-    # Resolve index selection
-    # ==============================
-    $InstallIndices = @()
-    if ($InstallImages.Count -gt 0) {
-        $InstallIndices = Resolve-IndexSelection
-    } else {
-        Write-Verbose "Image list unavailable yet, index selection deferred until -Export"
-    }
+# ==============================
+# Resolve index selection
+# ==============================
+$InstallIndices = @()
+if ($InstallImages.Count -gt 0) {
+    $InstallIndices = Resolve-IndexSelection
+} else {
+    Write-Verbose "Image list unavailable yet, index selection deferred until -Export"
 }
 
 # ==============================
