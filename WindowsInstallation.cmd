@@ -23,14 +23,15 @@ echo =======================================================================
 echo.
 
 :: ----------------------------------------------------------------------------
-::  Select Installation Type (With 5-Second Timeout)
+::  Select Installation Type (With Timeout)
 :: ----------------------------------------------------------------------------
 echo Select the type of installation you want to perform:
 echo [U] Upgrade (Keeps files, settings, and apps) - DEFAULT
 echo [C] Clean Install (WIPES THE DRIVE - Fresh OS installation)
 echo.
+set "TIMEOUT=30"
 
-choice /C UC /T 5 /D U /M "Enter your choice (Will default to Upgrade in 5 seconds):"
+choice /C UC /T %TIMEOUT% /D U /M "Enter your choice (Will default to Upgrade in %TIMEOUT% seconds):"
 
 if errorlevel 2 goto confirm_clean
 if errorlevel 1 goto do_upgrade
