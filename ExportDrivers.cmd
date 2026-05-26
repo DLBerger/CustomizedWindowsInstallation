@@ -8,6 +8,6 @@ set "FLD=$WinPEDriver$"
 if not exist "%SRC%%FLD%" mkdir "%SRC%%FLD%"
 
 echo Exporting drivers using DISM...
-dism /online /export-driver /destination:"%SRC%%FLD%" /logpath:"%SRC%%FLD%\dism-export.log"
+dism /online /export-driver /destination:"%SRC%%FLD%" /logpath:"%SRC%%FLD%\dism.log"
 
 endlocal
