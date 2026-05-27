@@ -1,4 +1,4 @@
-R Remember: variable names are CASE INSENSITIVE
+# Remember: variable names are CASE INSENSITIVE
 <#
 .SYNOPSIS
 Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media
@@ -207,7 +207,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "e7bd454"
+$GitHash = "4946154"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
