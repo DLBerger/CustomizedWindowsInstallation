@@ -18,7 +18,7 @@ set "ARGS="
 :loop
 if "%~1"=="" goto afterargs
 if defined ARGS (
-    set "ARGS=%ARGS% %~1"
+    set "ARGS=%ARGS% "%~1""
 ) else (
     set "ARGS=%~1"
 )
