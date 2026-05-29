@@ -1,80 +1,80 @@
 # Remember: variable names are CASE INSENSITIVE
 <#
 .SYNOPSIS
-Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media.
+Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media
 
 .DESCRIPTION
 This script prepares a directory structure that can be copied to the root of a USB drive
-containing official Windows installation media (Windows 10 22H2+ or Windows 11 25H2+).
+containing official Windows installation media (Windows 10 22H2+ or Windows 11 25H2+)
 
 It supports:
-- Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog.
-- Exporting all third-party drivers from the current system into $WinPEDriver$.
-- Exporting registry keys into .reg files.
+- Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog
+- Exporting all third-party drivers from the current system into $WinPEDriver$
+- Exporting registry keys into .reg files
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
 
 .PARAMETER Folder
-Root folder where the update/driver/registry/scripts structure will be created.
-If omitted, defaults to the current working directory.
+Root folder where the update/driver/registry/scripts structure will be created
+If omitted, defaults to the current working directory
 
 .PARAMETER WinOS
-Windows major version: '10' or '11'.
+Windows major version: '10' or '11'
 Alias: -OS
-If omitted, defaults to '11'.
+If omitted, defaults to '11'
 
 .PARAMETER Version
-Windows feature update version (for example: '22H2', '25H2').
+Windows feature update version (for example: '22H2', '25H2')
 If omitted:
 - Windows 10 -> '22H2'
 - Windows 11 -> '25H2'
 
 .PARAMETER Arch
-CPU architecture: 'x64' or 'arm64'.
-If omitted, defaults to 'x64'.
+CPU architecture: 'x64' or 'arm64'
+If omitted, defaults to 'x64'
 
 .PARAMETER Extract
-Mount the source ISO and extract its full content tree to <Folder>\SrcISO\Content\.
+Mount the source ISO and extract its full content tree to <Folder>\SrcISO\Content\
 Alias: -ExtractISO
 
 .PARAMETER ExportWims
-Export selected indices from SrcISO\Content\ into per-index uncompressed WIMs under Wims\Indices\.
+Export selected indices from SrcISO\Content\ into per-index uncompressed WIMs under Wims\Indices\
 Alias: -Export
 
 .PARAMETER KB
-Download OS and .NET updates.
+Download OS and .NET updates
 
 .PARAMETER Service
-Apply downloaded KBs to the exported indices Wims\Serviced\.
+Apply downloaded KBs to the exported indices Wims\Serviced\
 
 .PARAMETER Final
-Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\.
+Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\
 
 .PARAMETER Prep
-Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\.
+Hardlink-copy SrcISO\Content\ to DestISO\Content\, then place the final WIMs from Wims\Final\
 Alias: -PrepDestISO
 
 .PARAMETER Files
-Copy various .cmd, .ps1, and .ini files with transformations to customize them for the current folder structure and configuration.
+Copy various .cmd, .ps1, and .ini files with transformations to customize them for the current folder structure and configuration
 
 .PARAMETER CreateISO
-Create the final .iso from DestISO\Content\ using oscdimg.
+Create the final .iso from DestISO\Content\ using oscdimg
 
 .PARAMETER All
-Shorthand for -Extract -Export -KB -Service -Final -Prep -Files -CreateISO.
-Default when no specific switch is provided.
+Shorthand for -Extract -Export -KB -Service -Final -Prep -Files -CreateISO
+Default when no specific switch is provided
 
 .PARAMETER Most
-Same as -All without -CreateISO.
+Same as -All without -CreateISO
 
 .PARAMETER ShowIndices
-Print available image indices from the source ISO (or cached metadata) and exit.
+Print available image indices from the source ISO (or cached metadata) and exit
 
 .PARAMETER Home
-Select editions whose normalized label matches "Home" exactly.
+Select editions whose normalized label matches "Home" exactly
 
 .PARAMETER Pro
-Select editions whose normalized label matches "Pro" exactly.
+Select editions whose normalized label matches "Pro" exactly
 
 .PARAMETER Indices
 Comma-separated selector string supporting:
@@ -85,43 +85,49 @@ Comma-separated selector string supporting:
 - regex labels: "re:^Education( N)?$"
 
 .PARAMETER ISO
-Explicit path to source ISO.
-If omitted, the script discovers the single .iso file in <Folder>.
-If more than one .iso is present an error is raised, use this parameter to disambiguate.
+Alias: -SrcISO
+Explicit path to source ISO
+If omitted, the script discovers the single .iso file in <Folder>
+If more than one .iso is present an error is raised, use this parameter to disambiguate
 
 .PARAMETER DestISO
-Explicit path to destination ISO.
-If omitted, the source ISO path is reused with the extension changed to _KBs.iso.
+Explicit path to destination ISO
+If omitted, the source ISO path is reused with the extension changed to _KBs.iso
+
+.PARAMETER DestISOVolumeLabel
+Explicit volume label for the destination ISO
+If omitted, the volume label is derived from the metadata of the boot.wim in the destination ISO
+Example: Win11_25H2_x64_26200_6584
 
 .PARAMETER UseADK
-Prefer ADK dism.exe and oscdimg.exe when available.
+Prefer ADK dism.exe and oscdimg.exe when available
 
 .PARAMETER UseSystem
-Force system dism.exe and PATH oscdimg.exe.
+Force system dism.exe and PATH oscdimg.exe
 
 .PARAMETER dism
-Explicit path to dism.exe.
+Explicit path to dism.exe
 
 .PARAMETER oscdimg
-Explicit path to oscdimg.exe.
+Explicit path to oscdimg.exe
 
 .PARAMETER Clean
-Remove generated content instead of creating it.
+Remove generated content instead of creating it
 
 .PARAMETER DryRun
-Show actions without performing them.
+Show actions without performing them
 
 .PARAMETER Help
-Displays help and exits.
+Displays help and exits
 
 .PARAMETER Usage
-Displays help and exits.
+Displays help and exits
 
 .NOTES
-Fully compatible with Windows PowerShell 5.x.
+Fully compatible with Windows PowerShell 5.x
 Never use Write-Output, always use Write-Host or it breaks having normal output in a function that returns anything
-DO NOT assign directly from a foreach loop to it will lose any kind of Write-Host, Write-Verbose, or Write-Debug from inside the loop.
-Instead, accumulate results in a list and output the list at the end of the loop.
+DO NOT assign directly from a foreach loop to it will lose any kind of Write-Host, Write-Verbose, or Write-Debug from inside the loop
+Instead, accumulate results in a list and output the list at the end of the loop
 
 .LINK
 [1] https://learn.microsoft.com/en-us/windows/deployment/update/media-dynamic-update
@@ -134,14 +140,13 @@ Instead, accumulate results in a list and output the list at the end of the loop
 [8] https://www.winhelponline.com/blog/servicing-stack-diagnosis-dism-sfc/
 #>
 
-param(
-    [Parameter(Position = 0)]
+[CmdletBinding()]
+param( # No positional parameters as they are broken in PowerShell 5.x
     [string]$Folder = '.\',   # Default is the current working directory
 
-    [Parameter(Position = 1)]
+    [Alias('SrcISO')]
     [string]$ISO,
 
-    [Parameter(Position = 2)]
     [string]$DestISO,
 
     [Alias('OS')]
@@ -183,6 +188,8 @@ param(
 
     [string]$Indices,
 
+    [string]$DestISOVolumeLabel,
+
     [switch]$UseADK,
 
     [switch]$UseSystem,
@@ -200,7 +207,7 @@ param(
 )
 
 # git hash
-$GitHash = "e7bd454"
+$GitHash = "dcf71e1"
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -225,38 +232,40 @@ $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
 # Final compression type
 $DismCompression = 'max' # none, fast, max
 
+# Auto-generated DestISO?
+$AutoGeneratedDestISO = $false
+
 # Core names begin
 $names = [ordered]@{
-    SrcIso                = 'SrcISO'
-    DestIso               = 'DestISO'
-    KBs                   = 'KBs'
-    Wims                  = 'Wims'
-    WinPEDriver           = '$WinPEDriver$'
-    Registry              = 'Registry'
-    Content               = 'Content'
-    Sources               = 'sources'
-    BootWim               = 'boot.wim'
-    InstallEsd            = 'install.esd'
-    InstallWim            = 'install.wim'
-    WinreWim              = 'winre.wim'
-    BootFileBIOS          = 'boot\etfsboot.com'
-    BootFileUEFI          = 'efi\microsoft\boot\efisys.bin'
-    SetupExe              = 'setup.exe'
-    ExportDriversCmd      = 'ExportDrivers.cmd'
-    InstallDriversCmd     = 'InstallDrivers.cmd'
-    ExportRegsCmd         = 'ExportRegs.cmd'
-    ExportRegsPs1         = 'ExportRegs.ps1'
-    InstallRegsCmd        = 'InstallRegs.cmd'
-    SetupConfigCleanIni   = 'SetupConfig-Clean.ini'
-    SetupConfigUpgradeIni = 'SetupConfig-Upgrade.ini'
-    CleanInstallCmd       = 'CleanInstall.cmd'
-    UpgradeCmd            = 'Upgrade.cmd'
-    UpdateNETCmd          = 'Update.NET.cmd'
-    UpdateNETPs1          = 'Update.NET.ps1'
-    MetadataJson          = 'wim-metadata.json'
-    ManifestJson          = 'manifest.json'
-    ExtractJson           = 'extract.json'
-    Unknown               = 'unknown'
+    SrcIso                 = 'SrcISO'
+    DestIso                = 'DestISO'
+    DefaultDestISO         = '_KBs'
+    KBs                    = 'KBs'
+    Wims                   = 'Wims'
+    WinPEDriver            = '$WinPEDriver$'
+    Registry               = 'Registry'
+    Content                = 'Content'
+    Sources                = 'sources'
+    BootWim                = 'boot.wim'
+    InstallEsd             = 'install.esd'
+    InstallWim             = 'install.wim'
+    WinreWim               = 'winre.wim'
+    BootFileBIOS           = 'boot\etfsboot.com'
+    BootFileUEFI           = 'efi\microsoft\boot\efisys.bin'
+    SetupExe               = 'setup.exe'
+    ExportDriversCmd       = 'ExportDrivers.cmd'
+    InstallDriversCmd      = 'InstallDrivers.cmd'
+    ExportRegsCmd          = 'ExportRegs.cmd'
+    ExportRegsPs1          = 'ExportRegs.ps1'
+    InstallRegsCmd         = 'InstallRegs.cmd'
+    UpdateNETCmd           = 'Update.NET.cmd'
+    UpdateNETPs1           = 'Update.NET.ps1'
+    WindowsInstallationCmd = 'WindowsInstallation.cmd'
+    PostSetupCmd           = 'PostSetup.cmd'
+    MetadataJson           = 'wim-metadata.json'
+    ManifestJson           = 'manifest.json'
+    ExtractJson            = 'extract.json'
+    Unknown                = 'unknown'
 }
 
 $kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
@@ -295,25 +304,15 @@ Write-Debug "ProgressPreference set to 'SilentlyContinue'"
 # Helper functions
 # ==============================
 
-<#
-function RoundUp ([double]$number, [int]$ratio) {
-    return [math]::Ceiling($number / $ratio) * $ratio
-}
-
-function RoundDown ([double]$number, [int]$ratio) {
-    return [math]::Floor($number / $ratio) * $ratio
-}
-#>
-
 function Resolve-FullPath {
     param([string]$Path)
 
-    # Absolute path? Normalize and return.
+    # Absolute path? Normalize and return
     if ([System.IO.Path]::IsPathRooted($Path)) {
         return [System.IO.Path]::GetFullPath($Path)
     }
 
-    # Relative path? Resolve against the shell's working directory.
+    # Relative path? Resolve against the shell's working directory
     return [System.IO.Path]::GetFullPath((Join-Path $PWD.ProviderPath $Path))
 }
 
@@ -373,13 +372,16 @@ function Show-Usage {
   Write-Host "  -Service    Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim" -ForegroundColor Gray
   Write-Host "  -Final      Produce final install.wim and boot.wim in Wims\Final\ from the Wims in Wims\Serviced\" -ForegroundColor Gray
   Write-Host "  -Prep       Prepare the destination ISO work area" -ForegroundColor Gray
-  Write-Host "  -Files      Copy various .cmd, .ps1, and .ini files to the root of DestISO" -ForegroundColor Gray
+  Write-Host "  -Files      Copy various .cmd and .ps1 files to the root of DestISO" -ForegroundColor Gray
   Write-Host "  -CreateISO  Create the DestISO using oscdimg" -ForegroundColor Gray
   Write-Host "  -All        Shorthand for all work selections" -ForegroundColor Gray
   Write-Host "  -Most       Shorthand for all work selections except -CreateISO" -ForegroundColor Gray
   Write-Host ""
   Write-Host "More Options:" -ForegroundColor Cyan
   Write-Host "  -ShowIndices     Print available image indices from the source ISO (or cached metadata) and exit" -ForegroundColor Gray
+  Write-Host "  -DestISOVolumeLabel <label> Explicit volume label for the destination ISO" -ForegroundColor Gray
+  Write-Host "     If omitted, the volume label is derived from the metadata of the boot.wim in the destination ISO." -ForegroundColor Gray
+  Write-Host "     Example: Win11_25H2_x64_26200_6584" -ForegroundColor Gray
   Write-Host "  -UseADK          Prefer ADK dism.exe and oscdimg.exe when available" -ForegroundColor Gray
   Write-Host "  -UseSystem       Force system dism.exe and oscdimg.exe when available" -ForegroundColor Gray
   Write-Host "  -dism <path>     Explicit path to dism.exe" -ForegroundColor Gray
@@ -688,8 +690,8 @@ function Run-Dism {
     try {
         $null = $process.Start()
 
-        # StreamReader.ReadLine() treats carriage returns (\r) as line breaks.
-        # This is ideal because DISM uses \r to overwrite its text progress bar in place.
+        # StreamReader.ReadLine() treats carriage returns (\r) as line breaks
+        # This is ideal because DISM uses \r to overwrite its text progress bar in place
         while (-not $process.StandardOutput.EndOfStream) {
             $line = $process.StandardOutput.ReadLine()
             if ($null -eq $line) { continue }
@@ -737,11 +739,11 @@ function Run-Dism {
         }
  #>
 
-        # Callers that need the exit status check $LASTEXITCODE directly.
+        # Callers that need the exit status check $LASTEXITCODE directly
         $global:LASTEXITCODE = $rc
     } finally {
         # CRITICAL CLEANUP: If the user forces a hard halt using Ctrl+C, 
-        # this block intercepts the abort and violently closes the dism.exe thread.
+        # this block intercepts the abort and violently closes the dism.exe thread
         if ($process) {
             if (-not $process.HasExited) {
                 $process.Kill()
@@ -806,7 +808,7 @@ function Find-ADKTool {
     #   1. Explicit path supplied by the caller
     #   2. Windows ADK installation (preferred when -PreferADK or -UseADK)
     #   3. System32 / PATH
-    # Returns the full path on success, $null on failure.
+    # Returns the full path on success, $null on failure
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -929,14 +931,19 @@ function Get-WimMetadata {
     }
 
     # --- Call 2: OS details from index 1 ---
-    $buildNumber   = 0
-    $archStr       = 'x64'
-    ($detailOutput = Run-Dism @("/Get-WimInfo", "`"/WimFile:$WimPath`"", "/Index:1") -Capture)
+    $buildNumber      = 0
+    $servicePackBuild = 0
+    $archStr          = 'x64'
+    ($detailOutput    = Run-Dism @("/Get-WimInfo", "`"/WimFile:$WimPath`"", "/Index:1") -Capture)
+    $count = 0
     foreach ($line in $detailOutput) {
-        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)\.') { $buildNumber = [int]$Matches[1] }
-        if ($line -match '^\s*Architecture\s*:\s*(.+)')         { $archStr     = $Matches[1].Trim() }
+        $count++
+        if ($count -le 3) { continue } # skip the first 3 lines
+        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)') { $buildNumber      = [int]$Matches[1] }
+        if ($line -match '^\s*ServicePack Build\s*:\s*(\d+)') { $servicePackBuild = [int]$Matches[1] }
+        if ($line -match '^\s*Architecture\s*:\s*(.+)')       { $archStr          = $Matches[1].Trim() }
     }
-    Write-Debug "  build=$buildNumber arch='$archStr'"
+    Write-Debug "  build=$buildNumber servicePackBuild=$servicePackBuild arch=$archStr"
 
     $detectedWinOS = if ($buildNumber -ge 22000) { '11' } else { '10' }
 
@@ -962,11 +969,12 @@ function Get-WimMetadata {
     }
 
     return [PSCustomObject]@{
-        Images  = $images.ToArray()
-        WinOS   = $detectedWinOS
-        Version = $detectedVersion
-        Arch    = $detectedArch
-        Build   = $buildNumber
+        Images           = $images.ToArray()
+        WinOS            = $detectedWinOS
+        Version          = $detectedVersion
+        Arch             = $detectedArch
+        Build            = $buildNumber
+        ServicePackBuild = $servicePackBuild
     }
 }
 
@@ -1203,14 +1211,15 @@ function Invoke-Export {
         $BootImages    = $bootMeta.Images
 
         Write-JsonFile -Path $MetadataJson -Data @{
-            ISOPath       = $extractMeta.ISOPath
-            CollectedDate = (Get-Date -Format s)
-            WinOS         = $installMeta.WinOS
-            Version       = $installMeta.Version
-            Arch          = $installMeta.Arch
-            Build         = $installMeta.Build
-            InstallImages = @($InstallImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-            BootImages    = @($BootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+            ISOPath          = $extractMeta.ISOPath
+            CollectedDate    = (Get-Date -Format s)
+            WinOS            = $installMeta.WinOS
+            Version          = $installMeta.Version
+            Arch             = $installMeta.Arch
+            Build            = $installMeta.Build
+            ServicePackBuild = $installMeta.ServicePackBuild
+            InstallImages    = @($InstallImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
+            BootImages       = @($BootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
         }
         Write-Host "WIM metadata saved ($($InstallImages.Count) install image(s), $($BootImages.Count) boot image(s))"
     } else {
@@ -1400,13 +1409,13 @@ function Search-UpdateCatalogHtml {
         [string]$Query,
 
         [Parameter(Mandatory)]
-        [bool]$FirstOnly,
+        [int]$MaxResults,
 
         [Parameter(Mandatory)]
-        [string]$TargetFolder
+        [string]$KBIndex
     )
 
-    Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($FirstOnly) { " (first result only)" } else { "" }))
+    Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
 
     $Encoded = [uri]::EscapeDataString($Query)
     $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
@@ -1426,20 +1435,24 @@ function Search-UpdateCatalogHtml {
     $pattern   = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
     $matchList = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
     $ids = @()
+    $count = 0
     foreach ($m in $matchList) {
         $id = $m.Groups[1].Value
         Write-Debug "Found update GUID: $id"
         $ids += [PSCustomObject]@{
-            Guid         = $id
-            TargetFolder = $TargetFolder
+            Guid    = $id
+            KBIndex = $KBIndex
         }
-        if ($FirstOnly) { break }
+        $count++
+        if (($MaxResults -ne 0) -and ($count -ge $MaxResults)) { break }
     }
 
     Write-Verbose "Total IDs extracted: $($ids.Count)"
-    Write-Debug  ('{0,3} {1,-36} TargetFolder:' -f "ID:", "Guid:")
-    for ($i = 0; $i -lt $ids.Count; $i++) {
-        Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($ids[$i].Guid), $($ids[$i].TargetFolder))
+    if ($ids.Count -ne 0) {
+        Write-Debug  ('{0,3} {1,-36} KBIndex:' -f "ID:", "Guid:")
+        for ($i = 0; $i -lt $ids.Count; $i++) {
+            Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($ids[$i].Guid), $($ids[$i].KBIndex))
+        }
     }
     return $ids
 }
@@ -1605,11 +1618,12 @@ function Download-MUFile {
         [PSCustomObject] $Update,
 
         [Parameter(Mandatory = $true)]
-        [string] $TargetFolder
+        [string] $KBIndex
     )
 
     Write-Host ("Preparing downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
 
+    $TargetFolder = $paths["KBs$KBIndex"]
     Ensure-Folder $TargetFolder
 
     $results = @()
@@ -1739,10 +1753,12 @@ function Get-UpdateDetails {
         [string] $Guid,
 
         [Parameter(Mandatory = $true)]
-        [string] $TargetFolder
+        [string] $KBIndex
     )
 
     Write-Host ("Processing update #{0}: {1}" -f $Count, $Guid)
+    Write-Verbose ("KBIndex: {0}" -f $KBIndex)
+    $TargetFolder = $paths["KBs$KBIndex"]
     Write-Verbose ("TargetFolder: {0}" -f $TargetFolder)
 
     # ------------------------------------------------------------
@@ -1778,16 +1794,23 @@ function Get-UpdateDetails {
 
     # SupersededBy
     $supersededBy = @()
+    $supersededByPreview = @()
     $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
     if ($supNodes) {
         foreach ($n in $supNodes) {
-            $supersededBy += $n.InnerText.Trim()
+            $supersededByKB = $n.InnerText.Trim()
+            if ($supersededByKB -imatch 'preview') {
+                $supersededByPreview += $supersededByKB
+            } else {
+                $supersededBy += $supersededByKB
+            }
         }
     }
+    Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
+    Write-Verbose ("SupersededByPreview: {0}" -f ($supersededByPreview -join ', '))
 
     # Not a keeper if superseded by anything else, even if it has download links
     if ($supersededBy.Count -gt 0) {
-        Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
         Write-Host ("{0} superseded" -f $Guid)
         return [System.Management.Automation.Internal.AutomationNull]::Value
     }
@@ -1820,7 +1843,7 @@ function Get-UpdateDetails {
         KB           = $kb
         SupersededBy = $supersededBy
         DownloadUrls = $downloadUrls
-        TargetFolder = $TargetFolder
+        KBIndex      = $KBIndex
     }
 }
 
@@ -1872,37 +1895,62 @@ function Invoke-KBWork {
     # Build queries
     $queries = @(
         [PSCustomObject]@{
-            Query        = "Cumulative Updates for Windows $WinOS Version $Version for $Arch-based Systems"
-            FirstOnly    = $false
-            TargetFolder = $paths.KBsOSCU
+            Query        = "Critical Updates Windows $WinOS $Version $Arch"
+            MaxResults   = 0
+            KBIndex      = 'SSU'
         }
         [PSCustomObject]@{
-            Query        = ".NET Framework for Windows $WinOS Version $Version $Arch"
-            FirstOnly    = $true
-            TargetFolder = $paths.KBsNET
+            Query        = "Security Updates Windows $WinOS $Version $Arch"
+            MaxResults   = 0
+            KBIndex      = 'OSCU'
+        }
+        [PSCustomObject]@{
+            Query        = ".NET Security Updates Windows $WinOS $Version $Arch"
+            MaxResults   = 0
+            KBIndex      = 'NET'
         }
         [PSCustomObject]@{
             Query        = ".NET 8.0 $Arch Client"
-            FirstOnly    = $true
-            TargetFolder = $paths.KBsNET
+            MaxResults   = 0
+            KBIndex      = 'NET'
         }
         [PSCustomObject]@{
-            Query        = "Update for Windows Security platform"
-            FirstOnly    = $true
-            TargetFolder = $paths.KBsMISC
+            Query        = ".NET 9.0 $Arch Client"
+            MaxResults   = 0
+            KBIndex      = 'NET'
+        }
+        [PSCustomObject]@{
+            Query        = ".NET 10.0 $Arch Client"
+            MaxResults   = 0
+            KBIndex      = 'NET'
+        }
+        [PSCustomObject]@{
+            Query        = ".NET 11.0 $Arch Client"
+            MaxResults   = 0
+            KBIndex      = 'NET'
+        }
+        [PSCustomObject]@{
+            Query        = ".NET 12.0 $Arch Client"
+            MaxResults   = 0
+            KBIndex      = 'NET'
+        }
+        [PSCustomObject]@{
+            Query        = "Definition Updates Windows Security platform"
+            MaxResults   = 0
+            KBIndex      = 'MISC'
         }
     )
 
     $results = @()
     foreach ($q in $queries) {
-        $results += Search-UpdateCatalogHtml -Query $q.Query -FirstOnly $q.FirstOnly -TargetFolder $q.TargetFolder
+        $results += Search-UpdateCatalogHtml -Query $q.Query -MaxResults $q.MaxResults -KBIndex $q.KBIndex
     }
 
     $allGuids = $results | Sort-Object Guid -Unique
     Write-Host ("Found {0} total updates to process" -f $allGuids.Count)
-    Write-Debug  ('{0,3} {1,-36} TargetFolder:' -f "ID:", "Guid:")
+    Write-Debug  ('{0,3} {1,-36} KBIndex:' -f "ID:", "Guid:")
     for ($i = 0; $i -lt $allGuids.Count; $i++) {
-        Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($allGuids[$i].Guid), $($allGuids[$i].TargetFolder))
+        Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($allGuids[$i].Guid), $($allGuids[$i].KBIndex))
     }
 
     if ($allGuids.Count -eq 0) {
@@ -1915,9 +1963,9 @@ function Invoke-KBWork {
     $count   = 0
     $details = @()
     foreach ($g in $allGuids) {
-        Write-Debug ("Resolving details for {0} ({1})" -f $g.Guid, $g.TargetFolder)
+        Write-Debug ("Resolving details for {0} ({1})" -f $g.Guid, $g.KBIndex)
         # 1. Run the function in a pipeline so Write-Host is visible
-        $detail = Get-UpdateDetails -Count (++$count) -Guid $g.Guid -TargetFolder $g.TargetFolder | ForEach-Object { $_ }
+        $detail = Get-UpdateDetails -Count (++$count) -Guid $g.Guid -KBIndex $g.KBIndex | ForEach-Object { $_ }
 
         # 2. Append the returned object separately
         if ($detail -ne $null -and
@@ -1934,7 +1982,7 @@ function Invoke-KBWork {
 
     Write-Host ("Remaining applicable updates: {0}" -f $details.Count)
     foreach ($d in $details) {
-        Write-Debug ("Update: {0}`n  Title: {1}`n  KB: {2}`n  URLs: {3}" -f $d.Guid, $d.Title, $d.KB, ($d.DownloadUrls -join ', '))
+        Write-Debug ("Update: {0}`n  Title: {1}`n  KB: {2}`n  KBIndex: {3}`n  URLs: {4}" -f $d.Guid, $d.Title, $d.KB, $d.KBIndex, ($d.DownloadUrls -join ', '))
     }
 
     Write-Host "Synchronizing update folders..."
@@ -1968,23 +2016,23 @@ function Invoke-KBWork {
 
     $manifestByFolder = @{}
     foreach ($d in $details) {
-        $manifestByFolder[$d.TargetFolder] = @()
+        $manifestByFolder[$d.KBIndex] = @()
     }
     foreach ($d in $details) {
-        $targetFolder = $d.TargetFolder
+        $targetFolder = $paths["KBs$d.KBIndex"]
 
         # Download all files for this update into the target folder
-        $downloadInfos = Download-MUFile -Update $d -TargetFolder $targetFolder
+        $downloadInfos = Download-MUFile -Update $d -KBIndex $d.KBIndex
 
         foreach ($downloadInfo in $downloadInfos) {
             $entry = Build-ManifestEntry -Details $d -DownloadInfo $downloadInfo
-            $manifestByFolder[$targetFolder] += $entry
+            $manifestByFolder[$d.KBIndex] += $entry
         }
     }
 
     Write-Host "Writing manifests..."
     foreach ($kvp in $manifestByFolder.GetEnumerator()) {
-        $folder  = $kvp.Key
+        $folder  = $paths["KBs$($kvp.Key)"]
         $entries = $kvp.Value
         if ($entries.Count -gt 0) {
             Write-Verbose "Writing manifest for $folder"
@@ -2006,6 +2054,12 @@ function Invoke-KBWork {
 # =========================
 
 function Test-MissingIndices {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $RunNext
+    )
+<#
     $m = ""
     if (-not (Test-Path $paths.WimsIndices)) {
         $m = "No indices folder found at $($paths.WimsIndices)"
@@ -2024,8 +2078,9 @@ function Test-MissingIndices {
     # Anyone set an error message?
     if (-not [string]::IsNullOrWhiteSpace($m)) {
         # Something is missing we're done
-        throw ("{0}, run with -Export -Clean first and then re-run" -f $m)
+        throw ("{0}, re-run with -$RunNext" -f $m)
     }
+#>
 }
 
 function Invoke-ServiceWork {
@@ -2051,7 +2106,9 @@ function Invoke-ServiceWork {
     Write-Host  "Starting Service workflow..."
 
     # Sanity check our indices first
-    Test-MissingIndices
+    Test-MissingIndices "Service"
+    # Resolve anything that hasn't been
+    $InstallIndices = Resolve-IndexSelection
 
     Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
     Write-Debug   "Invoke-ServiceWork: KBsSSU='$($paths.KBsSSU)' KBsOSCU='$($paths.KBsOSCU)' WimsMounts='$($paths.WimsMounts)'"
@@ -2120,8 +2177,8 @@ function Invoke-ServiceWork {
             throw "Add-Packages: Source '$Src' is required but missing or empty"
         }
 
-        # This copy is key as we need to get the file into Servicing was we don't corrupt the original extracted file in case we need to retry servicing after a failure.
-        # If Dest is empty or the same as Src, we'll just service in-place.
+        # This copy is key as we need to get the file into Servicing was we don't corrupt the original extracted file in case we need to retry servicing after a failure
+        # If Dest is empty or the same as Src, we'll just service in-place
         $effectiveDest = $Dest
         if ([string]::IsNullOrWhiteSpace($Dest)) {
             $effectiveDest = $Src
@@ -2274,8 +2331,11 @@ function Invoke-ServiceWork {
                 Add-Packages -IdxName $idxName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $false -PkgName "SSU" -Pkgs $ssuFiles
 
                 # Mount embedded WinRE, service with SSUs, and dismount
-                $winrePath = Join-Path $mountDir $paths.WinreWimInWim
-                Add-Packages -IdxName $names.WinreWim -MountDir $mountDir -Src $winrePath -Dest "" -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
+                $winrePath      = Join-Path $mountDir $paths.WinreWimInWim
+                $safeParent     = (Protect-Token (Split-Path $mountDir -Leaf))
+                $safeLeaf       = (Protect-Token $paths.WinreWimInWim)
+                $winrePathMount = Join-Path $paths.WimsMounts ("mount_{0}_{1}_{2}" -f $idxName, $safeParent, $safeLeaf)
+                Add-Packages -IdxName $names.WinreWim -MountDir $winrePathMount -Src $winrePath -Dest "" -Mount $true -Unmount $true -PkgName "SSU" -Pkgs $ssuFiles
 
                 # Service LCUs on install.wim and finally dismount
                 Add-Packages -IdxName $IdxName -MountDir $mountDir -Src $srvPath -Dest "" -Mount $false -Unmount $true -PkgName "LCU" -Pkgs $lcuFiles
@@ -2341,7 +2401,10 @@ function Invoke-FinalAssembly {
     Write-Host  "Starting Final Assembly workflow..."
 
     # Sanity check our indices first
-    Test-MissingIndices
+    Test-MissingIndices "Final"
+
+    # Resolve anything that hasn't been
+    $InstallIndices = Resolve-IndexSelection
 
     Write-Verbose "Invoke-FinalAssembly: WimsServiced='$($paths.WimsServiced)' WimsFinal='$($paths.WimsFinal)'"
 
@@ -2639,12 +2702,10 @@ function Invoke-FilesWork {
         $names.ExportRegsCmd
         $names.ExportRegsPs1
         $names.InstallRegsCmd
-        $names.SetupConfigCleanIni
-        $names.SetupConfigUpgradeIni
-        $names.CleanInstallCmd
-        $names.UpgradeCmd
         $names.UpdateNETCmd
         $names.UpdateNETPs1
+        $names.WindowsInstallationCmd
+        $names.PostSetupCmd
     )
 
     # Copy these KBs folders, if they exist
@@ -2654,7 +2715,7 @@ function Invoke-FilesWork {
     )
 
 <#
-    # Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination.
+    # Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination
     # **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
     $transforms = @(
         @($names.ExportDriversCmd, @(
@@ -2801,9 +2862,16 @@ function Invoke-CreateISOWork {
         throw "Boot files are missing from the destination ISO content, run -Prep first to prepare the destination ISO"
     }
 
-    $IsoVolumeLabel = Protect-Token ([System.IO.Path]::GetFileNameWithoutExtension($DestISO))
-    if ($IsoVolumeLabel -eq $names.Unknown) {
-        $IsoVolumeLabel = "Win$($WinOS)_$($Version)_$($Arch)_KBs"
+    if ($AutoGeneratedDestISO -or -not $DestISOVolumeLabel) {
+        # Get the metadata from the boot.wim as it is always the smallest file to read
+        $metaBoot               = Get-WimMetadata -WimPath $paths.BootWimInDest
+        $buildServicePack       = "_{0}_{1}" -f $metaBoot.Build, $metaBoot.ServicePackBuild
+        if ($AutoGeneratedDestISO) {
+            $DestISO            = $DestISO -replace ([Regex]::Escape($names.DefaultDestISO) + '\.iso$'), ("$($buildServicePack).iso")
+        }
+        if (-not $DestISOVolumeLabel) {
+            $DestISOVolumeLabel = "Win$($metaBoot.WinOS)_$($metaBoot.Version)_$($metaBoot.Arch)$($buildServicePack)"
+        }
     }
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
 
@@ -2812,7 +2880,7 @@ function Invoke-CreateISOWork {
         "-o"                        # Optimize duplicate files
         "-u2"                       # UTF-8 filenames
         "-udfver102"                # UDF 1.02 for compatibility
-        "-l$IsoVolumeLabel"         # Volume label
+        "-l`"$DestISOVolumeLabel`"" # Volume label
         "-bootdata:$bootdata"       # BIOS and UEFI boot entries
         $paths.DestIsoContent       # Source folder
         $DestISO                    # Output ISO
@@ -3008,7 +3076,8 @@ if ($ISO -and (Test-Path $ISO)) {
 # Resolve destination ISO
 # ==============================
 if (-not $DestISO -and $ISO) {
-    $DestISO = $ISO -replace '\.iso$', '_KBs.iso'
+    $DestISO = $ISO -replace '\.iso$', ($names.DefaultDestISO + '.iso')
+    $AutoGeneratedDestISO = $true
     Write-Host (&$LeadIn "Auto-derived DestISO" "$DestISO")
 }
 $DestISO = Resolve-FullPath $DestISO
@@ -3071,8 +3140,8 @@ if (-not $DryRun -and -not $Clean) {
     if (-not $isoMetaResolved -and (Test-Path $paths.SourcesInSrc)) {
         Try-WimMetadata -InstallWimPath $paths.InstallWimInSrc `
                         -InstallEsdPath $paths.InstallEsdInSrc `
-                        -BootWimPath $paths.BootWimInSrc `
-                        -From "SrcIsoContent"
+                        -BootWimPath    $paths.BootWimInSrc `
+                        -From           "SrcIsoContent"
     }
 
     # 3) Mount the ISO briefly if still needed
@@ -3092,7 +3161,7 @@ if (-not $DryRun -and -not $Clean) {
             Try-WimMetadata -InstallWimPath "$metaDrive$($paths.InstallWimInIso)" `
                             -InstallEsdPath "$metaDrive$($paths.InstallEsdInIso)" `
                             -BootWimPath    "$metaDrive$($paths.BootWimInIso)" `
-                            -From "Mounted ISO"
+                            -From           "Mounted ISO"
         } finally {
             if ($metaDiskImg -and $metaDiskImg.Attached) {
                 Write-Verbose "Dismounting ISO..."
@@ -3230,8 +3299,8 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 
         # --- Load the DLL (PS 5.x safe) ---
         # Load via byte array instead of file path so .NET does not hold a
-        # file lock on the DLL. This allows -Clean to delete it.
-        # even in the same PowerShell session.
+        # file lock on the DLL. This allows -Clean to delete it
+        # even in the same PowerShell session
         $hapLoaded = $false
         try {
             [void][HtmlAgilityPack.HtmlDocument]
@@ -3274,7 +3343,7 @@ try {
     # script was interrupted (Ctrl+C, early fatal error, etc.)
     # -----------------------------------------------------------------------
 
-    # 1. Dismount the source ISO if it is still attached as a virtual drive.
+    # 1. Dismount the source ISO if it is still attached as a virtual drive
     if ($ISO -and (Test-Path $ISO)) {
         try {
             $img = Get-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue
@@ -3285,8 +3354,8 @@ try {
         } catch {}
     }
 
-    # 2. Discard any DISM-mounted WIM images that the servicing loop left open.
-    #    Each active mount shows up as a non-empty subdirectory under WimsMounts.
+    # 2. Discard any DISM-mounted WIM images that the servicing loop left open
+    #    Each active mount shows up as a non-empty subdirectory under WimsMounts
     if ($dismExe -and $paths -and $paths.WimsMounts -and (Test-Path $paths.WimsMounts)) {
         $leftoverDirs = @(Get-ChildItem -Path $paths.WimsMounts -Directory -ErrorAction SilentlyContinue |
                           Where-Object { (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -gt 0 })
