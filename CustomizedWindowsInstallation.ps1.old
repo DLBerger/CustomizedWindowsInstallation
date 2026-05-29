@@ -1,4 +1,4 @@
-# Remember: variable names are CASE INSENSITIVE
+# Remember: variable names are CASE INSENSITIVE and assignments to script-level variables must use 'script:'
 <#
 .SYNOPSIS
 Builds a reusable update/driver/registry/script payload for Windows 10/11 installation media
@@ -18,24 +18,20 @@ It supports:
 Root folder where the update/driver/registry/scripts structure will be created
 If omitted, defaults to the current working directory
 
-.PARAMETER WinOS
-Windows major version: '10' or '11'
-Alias: -OS
-If omitted, defaults to '11'
+.PARAMETER ISO
+Alias: -SrcISO
+Explicit path to source ISO
+If omitted, the script discovers the single .iso file in <Folder>
+If more than one .iso is present an error is raised, use this parameter to disambiguate
 
-.PARAMETER Version
-Windows feature update version (for example: '22H2', '25H2')
-If omitted:
-- Windows 10 -> '22H2'
-- Windows 11 -> '25H2'
+.PARAMETER DestISO
+Explicit path to destination ISO
+If omitted, the source ISO path is reused with the extension changed to _KBs.iso
 
-.PARAMETER Arch
-CPU architecture: 'x64' or 'arm64'
-If omitted, defaults to 'x64'
-
-.PARAMETER Extract
-Mount the source ISO and extract its full content tree to <Folder>\SrcISO\Content\
-Alias: -ExtractISO
+.PARAMETER DestISOVolumeLabel
+Explicit volume label for the destination ISO
+If omitted, the volume label is derived from the metadata of the boot.wim in the destination ISO
+Example: Win11_25H2_x64_26200_6584
 
 .PARAMETER ExportWims
 Export selected indices from SrcISO\Content\ into per-index uncompressed WIMs under Wims\Indices\
@@ -61,7 +57,7 @@ Copy various .cmd, .ps1, and .ini files with transformations to customize them f
 Create the final .iso from DestISO\Content\ using oscdimg
 
 .PARAMETER All
-Shorthand for -Extract -Export -KB -Service -Final -Prep -Files -CreateISO
+Shorthand for -Export -KB -Service -Final -Prep -Files -CreateISO
 Default when no specific switch is provided
 
 .PARAMETER Most
@@ -83,21 +79,6 @@ Comma-separated selector string supporting:
 - exact labels: "Education N"
 - wildcard labels: "*Home*", "* N*"
 - regex labels: "re:^Education( N)?$"
-
-.PARAMETER ISO
-Alias: -SrcISO
-Explicit path to source ISO
-If omitted, the script discovers the single .iso file in <Folder>
-If more than one .iso is present an error is raised, use this parameter to disambiguate
-
-.PARAMETER DestISO
-Explicit path to destination ISO
-If omitted, the source ISO path is reused with the extension changed to _KBs.iso
-
-.PARAMETER DestISOVolumeLabel
-Explicit volume label for the destination ISO
-If omitted, the volume label is derived from the metadata of the boot.wim in the destination ISO
-Example: Win11_25H2_x64_26200_6584
 
 .PARAMETER UseADK
 Prefer ADK dism.exe and oscdimg.exe when available
@@ -148,18 +129,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
     [string]$ISO,
 
     [string]$DestISO,
-
-    [Alias('OS')]
-    [ValidateSet('10','11')]
-    [string]$WinOS,
-
-    [string]$Version,
-
-    [ValidateSet('x64','arm64')]
-    [string]$Arch,
-
-    [Alias('ExtractISO')]
-    [switch]$Extract,
+    [string]$DestISOVolumeLabel,
 
     [Alias('ExportWims')]
     [switch]$Export,
@@ -188,8 +158,6 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 
     [string]$Indices,
 
-    [string]$DestISOVolumeLabel,
-
     [switch]$UseADK,
 
     [switch]$UseSystem,
@@ -207,7 +175,34 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "dcf71e1"
+$GitHash = "ede334d"
+
+# Windows 10 or 11, determined by the build number of the source ISO
+$WinOS = '11'
+
+# Windows feature update version (for example: '22H2', '25H2')
+$Version = '25H2'
+
+# CPU architecture: 'x64' or 'arm64'
+$Arch = 'x64'
+
+# Build number of the source ISO
+$Build = 26200
+
+# Service Pack build number of the source ISO
+$ServicePackBuild = 6584
+
+# List of install images
+$InstallImages   = @()
+
+# List of boot images
+$BootImages      = @()
+
+# List of installed indices that have been selected by the -Home or -Pro switches or -Indices parameter
+$InstallIndices = @()
+
+# Source of the WIM metadata (for example: 'MetadataJson', 'SrcIsoContent', 'Mounted ISO')
+$MetaSrc = 'To be determined at extract time'
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
 $LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
@@ -347,7 +342,7 @@ function Show-Usage {
   Write-Host ""
   Write-Host "$name ($GitHash)" -ForegroundColor Cyan
   Write-Host "Usage:" -ForegroundColor Cyan
-  Write-Host "  & $name [<Folder>] [-ISO <path>] [-DestISO <path>] [-OS <version>] [-Version <version>] [-Arch <arch>] [<Index Selections>] [<Work Selections>] [<More Options>]" -ForegroundColor Cyan
+  Write-Host "  & $name [<Folder>] [-ISO <path>] [-DestISO <path>] [<Index Selections>] [<Work Selections>] [<More Options>]" -ForegroundColor Cyan
   Write-Host "  & $name [-ISO <path>] -ShowIndices'" -ForegroundColor Cyan
   Write-Host ""
   Write-Host "Key Options:" -ForegroundColor Cyan
@@ -366,7 +361,6 @@ function Show-Usage {
   Write-Host "       - regex labels: `"re:^Education( N)?$`"" -ForegroundColor Gray
   Write-Host ""
   Write-Host "Work Selections:" -ForegroundColor Cyan
-  Write-Host "  -Extract    Mount the source ISO and extract its full content tree" -ForegroundColor Gray
   Write-Host "  -Export     Export selected indices from the install.wim and boot.wim" -ForegroundColor Gray
   Write-Host "  -KB         Download OS and .NET updates" -ForegroundColor Gray
   Write-Host "  -Service    Apply downloaded KBs to the exported indices and produce final install.wim and boot.wim" -ForegroundColor Gray
@@ -753,9 +747,7 @@ function Run-Dism {
     }
 }
 
-# ==============================
 # Report-Missing helper
-# ==============================
 function Report-Missing {
     [CmdletBinding()]
     param(
@@ -890,6 +882,7 @@ function Find-ADKTool {
 # ISO / WIM introspection
 # ==============================
 
+# Read WIM metadata from the given path
 function Get-WimMetadata {
     [CmdletBinding()]
     param(
@@ -898,7 +891,7 @@ function Get-WimMetadata {
     )
 
     # Reads a WIM file and returns both the full image list and OS details
-    # (WinOS, Version, Arch, Build) in a single object, making two DISM calls:
+    # (WinOS, Version, Arch, Build, ServicePackBuild) in a single object, making two DISM calls:
     #   /Get-WimInfo            to enumerate all images (Index + Name)
     #   /Get-WimInfo /Index:1   to get Version and Architecture from index 1
     Write-Debug "Get-WimMetadata: WimPath='$WimPath'"
@@ -931,19 +924,19 @@ function Get-WimMetadata {
     }
 
     # --- Call 2: OS details from index 1 ---
-    $buildNumber      = 0
-    $servicePackBuild = 0
-    $archStr          = 'x64'
-    ($detailOutput    = Run-Dism @("/Get-WimInfo", "`"/WimFile:$WimPath`"", "/Index:1") -Capture)
+    $buildNumber       = 0
+    $servicePackNumber = 0
+    $archStr           = 'x64'
+    ($detailOutput     = Run-Dism @("/Get-WimInfo", "`"/WimFile:$WimPath`"", "/Index:1") -Capture)
     $count = 0
     foreach ($line in $detailOutput) {
         $count++
         if ($count -le 3) { continue } # skip the first 3 lines
-        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)') { $buildNumber      = [int]$Matches[1] }
-        if ($line -match '^\s*ServicePack Build\s*:\s*(\d+)') { $servicePackBuild = [int]$Matches[1] }
-        if ($line -match '^\s*Architecture\s*:\s*(.+)')       { $archStr          = $Matches[1].Trim() }
+        if ($line -match '^\s*Version\s*:\s*\d+\.\d+\.(\d+)') { $buildNumber       = [int]$Matches[1] }
+        if ($line -match '^\s*ServicePack Build\s*:\s*(\d+)') { $servicePackNumber = [int]$Matches[1] }
+        if ($line -match '^\s*Architecture\s*:\s*(.+)')       { $archStr           = $Matches[1].Trim() }
     }
-    Write-Debug "  build=$buildNumber servicePackBuild=$servicePackBuild arch=$archStr"
+    Write-Debug "  build=$buildNumber servicePackBuild=$servicePackNumber arch=$archStr"
 
     $detectedWinOS = if ($buildNumber -ge 22000) { '11' } else { '10' }
 
@@ -974,26 +967,29 @@ function Get-WimMetadata {
         Version          = $detectedVersion
         Arch             = $detectedArch
         Build            = $buildNumber
-        ServicePackBuild = $servicePackBuild
+        ServicePackBuild = $servicePackNumber
     }
 }
 
-# ==============================
 # Index selection
-# ==============================
-
-function Resolve-IndexSelection {
-    Write-Debug "Resolve-IndexSelection: Home=$SelectHome Pro=$SelectPro Indices='$Indices' TotalImages=$($InstallImages.Count)"
+function Select-Indices {
+    Write-Debug "Select-Indices: Home=$SelectHome Pro=$SelectPro Indices='$Indices' TotalImages=$($InstallImages.Count)"
 
     function Get-NormalizedLabel([string]$name) {
         ($name -replace '^Windows\s+(10|11)\s+', '').Trim()
     }
 
-    $anyExplicit = $SelectHome -or $SelectPro -or $Indices
+    if (-not $InstallImages -or $InstallImages.Count -eq 0) {
+        Write-Verbose "No installed indices, so no index selection"
+        $script:InstallIndices = @()
+        return
+    }
 
+    $anyExplicit = $SelectHome -or $SelectPro -or $Indices
     if (-not $anyExplicit) {
-        Write-Verbose "No explicit index selection, returning all $($InstallImages.Count) indices"
-        return $InstallImages
+        $script:InstallIndices = $InstallImages
+        Write-Verbose "No explicit index selection, so selecting all $($InstallIndices.Count) indices: $($InstallIndices.Index -join ', ')"
+        return
     }
 
     $selected = [System.Collections.Generic.List[object]]::new()
@@ -1040,18 +1036,86 @@ function Resolve-IndexSelection {
         }
     }
 
-    $result = @($selected | Sort-Object Index -Unique)
-    Write-Verbose "Index selection resolved to $($result.Count) index/indices: $($result.Index -join ', ')"
-    return $result
+    $script:InstallIndices = @($selected | Sort-Object Index -Unique)
+    Write-Verbose "Index selection selected $($InstallIndices.Count) index/indices: $($InstallIndices.Index -join ', ')"
 }
 
 # =========================
 # Extract section
 # =========================
 
-function Invoke-ExtractISO {
+function Validate-ExtractISO {
     [CmdletBinding()]
     param()
+
+    # Try to read WIM metadata from the given path
+    function Try-WimMetadata {
+        [CmdletBinding()]
+        param([string]$InstallWimPath, [string]$InstallEsdPath, [string]$BootWimPath, [string]$From)
+        $installWim = if     (Test-Path $InstallWimPath) { $InstallWimPath }
+                      elseif (Test-Path $InstallEsdPath) { $InstallEsdPath }
+                      else   { $null }
+        $bootWim    = if     (Test-Path $BootWimPath)    { $BootWimPath }
+                      else   { $null }
+        if ($installWim -and $bootWim) {
+            Write-Verbose "Reading metadata from $($From): $InstallWimPath and $BootWimPath"
+            try {
+                $metaInstall = Get-WimMetadata -WimPath $InstallWimPath
+                $metaBoot    = Get-WimMetadata -WimPath $BootWimPath
+                if (($metaInstall.Images.Count -gt 0) -and ($metaBoot.Images.Count -gt 0)) {
+                    return [PSCustomObject]@{
+                        WinOS            = $metaInstall.WinOS
+                        Version          = $metaInstall.Version
+                        Arch             = $metaInstall.Arch
+                        Build            = $metaInstall.Build
+                        ServicePackBuild = $metaInstall.ServicePackBuild
+                        InstallImages    = @($metaInstall.Images | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                        BootImages       = @($metaBoot.Images    | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
+                        From             = $From
+                    }
+                } else {
+                    Write-Verbose "Failed to read WIM metadata from '$From': $($metaInstall.Images.Count) install images and $($metaBoot.Images.Count) boot images"
+                }
+            } catch {
+                Write-Warning "Failed to read WIM metadata from '$From': $_"
+            }
+        }
+        # Nothing to be seen here, move along
+        return $null
+    }
+
+    # Let's first resolve the ISO path
+    if (-not $ISO) {
+        Write-Verbose "No -ISO specified, searching for *.iso in: $Folder"
+        $isoFiles = @(Get-ChildItem -Path $Folder -Filter '*.iso' -File -ErrorAction SilentlyContinue)
+        if ($isoFiles.Count -eq 0) {
+            throw "No .iso file found in: $Folder`nPlace the Windows ISO there or use -ISO to specify its path"
+        } elseif ($isoFiles.Count -gt 1) {
+            throw ("Multiple .iso files found in: $Folder`n  {0}`nUse -ISO to specify which one to use" -f ($isoFiles.FullName -join "`n  "))
+        } else {
+            $script:ISO = $isoFiles[0].FullName
+            Write-Host (&$LeadIn "Auto-discovered ISO" "$ISO")
+        }
+    }
+    if ($ISO -and -not (Test-Path $ISO)) {
+        throw "Source ISO ($ISO) not found, please correct and re-run the script"
+    }
+
+    # Final source ISO
+    Write-Host (&$LeadIn "ISO path" "$ISO")
+
+    # Final destination ISO
+    if (-not $DestISO) {
+        $script:DestISO = $ISO -replace '\.iso$', ($names.DefaultDestISO + '.iso')
+        $script:AutoGeneratedDestISO = $true
+        Write-Host (&$LeadIn "Auto-derived DestISO" "$DestISO")
+    }
+    
+    # Resolve ISO and DestISO paths
+    $script:ISO = Resolve-FullPath $ISO
+    Write-Verbose ("Resolved ISO path: $ISO")
+    $script:DestISO = Resolve-FullPath $DestISO
+    Write-Verbose ("Resolved DestISO path: $DestISO")
 
     if ($Clean) {
         Clean-Folder $paths.SrcIsoRoot
@@ -1064,89 +1128,145 @@ function Invoke-ExtractISO {
         Write-Host "[DryRun] Would validate $($names.BootFileUEFI) in $ISO"
         Write-Host "[DryRun] Would validate $($paths.BootWimInIso) in $ISO"
         Write-Host "[DryRun] Would validate $($paths.InstallWimInIso) or $($paths.InstallEsdInIso) in $ISO"
-        Write-Host "[DryRun] Would copy tree -> $($paths.SrcIsoRoot)"
-        Write-Host "[DryRun] Would export $($InstalledIndices.Count) indices to $($paths.WimsIndices)"
+        Write-Host "[DryRun] Would copy tree -> $(FolderRelName $paths.SrcIsoRoot)"
+        Write-Host "[DryRun] Would export indices to $(FolderRelName $paths.WimsIndices)"
         return
     }
 
-    Write-Host "Starting ExtractISO workflow..."
-    Write-Verbose "Invoke-ExtractISO: ISO='$ISO' SrcIsoContent='$($paths.SrcIsoContent)'"
-
-    if (-not $ISO -or -not (Test-Path $ISO)) {
-        Write-Warning "Source ISO not found or not specified, use -ISO to point to your Windows .iso file"
-        return
-    }
-
-    # Checkpoint: skip if same ISO was already extracted, clean and re-extract if ISO changed
+    # Been down this path before, check if the ISO path has changed
     $extractJson  = $paths.ExtractJson
     $existingJson = Read-JsonFile -Path $extractJson
-    if ($existingJson) {
-        if ($existingJson.ISOPath -eq $ISO) {
-            Write-Host  "ExtractISO already done for this ISO ($extractJson) matches)"
-            Write-Debug "$($extractJson): ISOPath='$($existingJson.ISOPath)' Date='$($existingJson.Date)'"
-            return
-        }
+    if ($existingJson -and ($existingJson.ISOPath -ne $ISO)) {
         Write-Host "ISO path changed (was '$($existingJson.ISOPath)'), cleaning SrcIsoRoot and re-extracting..."
+        Remove-Item $extractJson -Force -ErrorAction SilentlyContinue
         Remove-Folder $paths.SrcIsoRoot
+        Ensure-Folder $paths.SrcIsoRoot
+        $existingJson = $null
     }
 
-    Ensure-Folder $paths.SrcIsoContent
+    # Read ISO / WIM metadata for WinOS / Version / Arch / Build / ServicePackBuild and index list
+    # 1) Prefer cached MetadataJson if it matches the current ISO
+    $writeMetadataJson = $true
+    $metadataJson      = $paths.MetadataJson
+    $wimMeta           = Read-JsonFile -Path $metadataJson
 
-    Write-Host "Mounting ISO: $ISO"
-    $diskImage = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction SilentlyContinue
-    try {
-        # Wait for the volume to actually appear
-        $vol = $null
-        for ($r = 0; $r -lt 5 -and $null -eq $vol; $r++) {
-            $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
-            if ($null -eq $vol) { Start-Sleep -Seconds 1 }
-        }
-        if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
+    if ($wimMeta -and ($wimMeta.ISOPath -eq $ISO)) {
+        $relMetadataJson = $(FolderRelName $metadataJson)
+        Write-Verbose "Loading metadata from $relMetadataJson"
+        $wimMeta | Add-Member -NotePropertyName From -NotePropertyValue $relMetadataJson
+        $writeMetadataJson = $false
+    } else {
+        # 2) Fall back to SrcIsoContent on disk
+        $wimMeta = Try-WimMetadata -InstallWimPath $paths.InstallWimInSrc `
+                                   -InstallEsdPath $paths.InstallEsdInSrc `
+                                   -BootWimPath    $paths.BootWimInSrc `
+                                   -From           "SrcIsoContent"
+    }
 
-        # Create a 'safe' path for Test-Path
-        $driveLetterRaw = $vol.DriveLetter + ":"      # e.g., "D:"
-        $driveLetter    = $driveLetterRaw + "\"       # e.g., "D:\" (for Test-Path)
-        Write-Host "ISO mounted at: $driveLetter"
+    # 3) Mount the ISO, validate the files, and copy the tree to SrcIsoContent
+    if (-not $wimMeta) {
+        Write-Host "Mounting ISO: $ISO"
+        $diskImage = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction SilentlyContinue
+        try {
+            # Wait for the volume to actually appear
+            $vol = $null
+            for ($r = 0; $r -lt 5 -and $null -eq $vol; $r++) {
+                $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
+                if ($null -eq $vol) { Start-Sleep -Seconds 1 }
+            }
+            if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
 
-        # ---- Validate required files in ISO ----
-        if (Report-Missing -Required @(
-            (Join-Path $driveLetter $names.BootFileBIOS),
-            (Join-Path $driveLetter $names.BootFileUEFI),
-            (Join-Path $driveLetter $paths.BootWimInIso)
-        ) -AtLeastOne @(
-            (Join-Path $driveLetter $paths.InstallWimInIso),
-            (Join-Path $driveLetter $paths.InstallEsdInIso)
-        )) {
-            throw "Source ISO validation failed, see above for missing file details"
-        }
-        Write-Host "Source ISO validation passed"
+            # Create a 'safe' path for Test-Path
+            $metaDrive = $vol.DriveLetter + ':\'
+            Write-Host "ISO mounted at: $metaDrive"
 
-        # Copy the ISO tree to SrcIsoContent
+11Y            # ---- Validate required files in ISO ----
+            if (Report-Missing -Required @(
+                "$metaDrive$($names.BootFileBIOS)",
+                "$metaDrive$($names.BootFileUEFI)",
+                "$metaDrive$($paths.BootWimInIso)"
+            ) -AtLeastOne @(
+                "$metaDrive$($paths.InstallWimInIso)",
+                "$metaDrive$($paths.InstallEsdInIso)"
+            )) {
+                throw "Source ISO validation failed, see above for missing file details"
+            }
+            Write-Host "Source ISO validation passed"
+            
+            # Read WIM metadata from the mounted ISO
+            $wimMeta = Try-WimMetadata -InstallWimPath "$metaDrive$($paths.InstallWimInIso)" `
+                                       -InstallEsdPath "$metaDrive$($paths.InstallEsdInIso)" `
+                                       -BootWimPath    "$metaDrive$($paths.BootWimInIso)" `
+                                       -From           "Mounted ISO"
 
-        # Standardize paths to ensure safe string replacement for relative paths
-        $sourceBase = $driveLetterRaw.TrimEnd('\') + '\'
-        $destBase   = $paths.SrcIsoContent
-
-        # Copy it and Stream-FolderCopy will give you a running commentary
-        Stream-FolderCopy $sourceBase $destBase -ShowSourceOnly
-    } catch {
-        Write-Host "ERROR during ISO extraction: $_"
-        # Clean up the partial SrcIsoContent so a re-run starts fresh
-        Remove-Folder $paths.SrcIsoContent
-        return
-    } finally {
-        if (Get-DiskImage -ImagePath $ISO | Where-Object { $_.Attached }) {
-            Write-Host "Unmounting ISO..."
-            Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
+            if ($ShowIndices) {
+                # We're only interested in the metadata, not the actual extraction
+                $writeMetadataJson = $false
+            } else {
+                # Copy it and Stream-FolderCopy will give you a running commentary
+                Stream-FolderCopy $metaDrive $paths.SrcIsoContent -ShowSourceOnly
+        
+                # Write the checkpoint file
+                Write-JsonFile -Path $extractJson -Data @{ ISOPath = $ISO; Date = (Get-Date -Format s) }
+                Write-Host "ISO extraction complete ($extractJson written)"
+            }
+        } catch {
+            # Clean up the partial SrcIsoContent so a re-run starts fresh
+            Remove-Folder $paths.SrcIsoContent
+            throw "ERROR during ISO extraction: $_, try again"
+        } finally {
+            if (Get-DiskImage -ImagePath $ISO | Where-Object { $_.Attached }) {
+                Write-Host "Unmounting ISO..."
+                Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
+            }
         }
     }
 
-    Write-JsonFile -Path $extractJson -Data @{ ISOPath = $ISO; Date = (Get-Date -Format s) }
-    Write-Host "ExtractISO complete ($extractJson written)"
+    # Apply WIM metadata to the script-scope variables
+    $script:WinOS            = $wimMeta.WinOS
+    $script:Version          = $wimMeta.Version
+    $script:Arch             = $wimMeta.Arch
+    $script:Build            = $wimMeta.Build
+    $script:ServicePackBuild = $wimMeta.ServicePackBuild
+    $script:InstallImages    = $wimMeta.InstallImages
+    $script:BootImages       = $wimMeta.BootImages
+    $script:MetaSrc          = $wimMeta.From
+
+    # ShowIndices and we're done
+    if ($ShowIndices) {
+        if ($InstallImages.Count -eq 0) {
+            throw "Cannot show indices: no metadata available, provide -ISO and run again"
+        }
+        Write-Host "`nAvailable images in $($names.InstallWim) [source: $MetaSrc]:`n"
+        Write-Host ("{0,6}  {1}" -f 'Index', 'Name')
+        Write-Host ("{0,6}  {1}" -f '------', '----')
+        foreach ($img in $InstallImages) { Write-Host ("{0,6}  {1}" -f $img.Index, $img.Name) }
+        Write-Host ""
+        exit 0
+    }
+
+    # Select anything that hasn't been, will set $InstallIndices
+    Select-Indices
+    
+    # Write the metadata JSON file, if new
+    if ($writeMetadataJson) {
+        Write-JsonFile -Path $metadataJson -Data @{
+            Date             = (Get-Date -Format s)
+            ISOPath          = $wimMeta.ISOPath
+            WinOS            = $wimMeta.WinOS
+            Version          = $wimMeta.Version
+            Arch             = $wimMeta.Arch
+            Build            = $wimMeta.Build
+            ServicePackBuild = $wimMeta.ServicePackBuild
+            InstallImages    = $wimMeta.InstallImages
+            BootImages       = $wimMeta.BootImages
+        }
+        Write-Host "WIM metadata saved ($($wimMeta.InstallImages.Count) install image(s), $($wimMeta.BootImages.Count) boot image(s))"
+    }
 }
 
 # =========================
-# Extract section
+# Export section
 # =========================
 function Invoke-Export {
     [CmdletBinding()]
@@ -1159,7 +1279,7 @@ function Invoke-Export {
 
     if ($DryRun) {
         Write-Host "[DryRun] Would collect WIM metadata from SrcIsoContent"
-        Write-Host "[DryRun] Would export $($names.InstallWim) $($InstalledIndices.Count) indices to $($paths.WimsIndices)"
+        Write-Host "[DryRun] Would export $($names.InstallWim) $($InstallIndices.Count) indices to $($paths.WimsIndices)"
         Write-Host "[DryRun] Would export $($names.BootWim) $($BootImages.Count) indices to $($paths.WimsIndices)"
         return
     }
@@ -1173,65 +1293,25 @@ function Invoke-Export {
     $extractJson = $paths.ExtractJson
     $extractMeta = Read-JsonFile -Path $extractJson
     if (-not $extractMeta) {
-        Write-Warning "$extractJson not found, run -Extract first"
+        Write-Warning "$extractJson not found, -Clean and run again"
         return
     }
     $extractDate = [datetime]::Parse($extractMeta.Date)
 
-    # Use MetadataJson if nothing has changed
-    $metadataJson = $paths.MetadataJson
-    $wimMeta      = Read-JsonFile -Path $metadataJson
-    if (-not $wimMeta -or ($wimMeta.ISOPath -ne $ISO)) {
-        # Locate source WIMs
-        $installSrc = if     (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
-                      elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
-                      else   { $null }
-        $bootSrc    = if     (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
-                      else   { $null }
+    # Locate source WIMs
+    $installSrc = if     (Test-Path $paths.InstallWimInSrc) { $paths.InstallWimInSrc }
+                  elseif (Test-Path $paths.InstallEsdInSrc) { $paths.InstallEsdInSrc }
+                  else   { $null }
+    $bootSrc    = if     (Test-Path $paths.BootWimInSrc) { $paths.BootWimInSrc }
+                  else   { $null }
 
-        if (-not $installSrc) {
-            Write-Warning "Install image not found in $($paths.SourcesInSrc), run -Extract first"
-            return
-        }
-        if (-not $bootSrc) {
-            Write-Warning "Boot image not found in $($paths.SourcesInSrc), run -Extract first"
-            return
-        }
+    Write-Verbose "install source: $installSrc"
+    Write-Verbose "boot source   : $bootSrc"
 
-        Write-Verbose "install source: $installSrc"
-        Write-Verbose "boot source   : $bootSrc"
-
-        # Collect WIM metadata and write MetadataJson
-        Write-Host "Collecting WIM metadata..."
-        $installMeta = Get-WimMetadata -WimPath $installSrc
-        $bootMeta    = Get-WimMetadata -WimPath $bootSrc
-
-        # Reset our globals
-        $InstallImages = $installMeta.Images
-        $BootImages    = $bootMeta.Images
-
-        Write-JsonFile -Path $MetadataJson -Data @{
-            ISOPath          = $extractMeta.ISOPath
-            CollectedDate    = (Get-Date -Format s)
-            WinOS            = $installMeta.WinOS
-            Version          = $installMeta.Version
-            Arch             = $installMeta.Arch
-            Build            = $installMeta.Build
-            ServicePackBuild = $installMeta.ServicePackBuild
-            InstallImages    = @($InstallImages | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-            BootImages       = @($BootImages    | ForEach-Object { @{ Index = $_.Index; Name = $_.Name } })
-        }
-        Write-Host "WIM metadata saved ($($InstallImages.Count) install image(s), $($BootImages.Count) boot image(s))"
-    } else {
-        Write-Host "Using existing WIM metadata..."
-
-        # Reset our globals
-        $InstallImages = $wimMeta.InstallImages
-        $BootImages    = $wimMeta.BootImages
+    if (-not $installSrc -or -not $bootSrc) {
+        throw "{0} image not found in $($paths.SourcesInSrc), -Clean and run again" -f 
+        (@( if (-not $installSrc) { 'Install' } if (-not $bootSrc) { 'Boot' }) -join ' and ')
     }
-
-    # Resolve anything that hasn't been
-    $InstallIndices = Resolve-IndexSelection
 
     # Give a recap of what we found and what we're about to export
     Write-Host "$($names.InstallWim) all indices: $($InstallImages.Index -join ', ') indices to export: $($InstallIndices.Index -join ', ')"
@@ -1568,7 +1648,7 @@ function Get-UpdateLinks {
 }
 
 # ==============================
-# Download helper
+# Download helpers
 # ==============================
 
 function Load-Manifest {
@@ -2053,36 +2133,6 @@ function Invoke-KBWork {
 # Service section
 # =========================
 
-function Test-MissingIndices {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $RunNext
-    )
-<#
-    $m = ""
-    if (-not (Test-Path $paths.WimsIndices)) {
-        $m = "No indices folder found at $($paths.WimsIndices)"
-    } else {
-        $hasInstallIndices = ($InstallIndices -and $InstallIndices.Count -gt 0)
-        $hasBootImages = ($BootImages -and $BootImages.Count -gt 0)
-        if (-not ($hasInstallIndices -and $hasBootImages)) {
-            $s = ""
-            if (-not $hasInstallIndices) { $s += "InstallIndices" }
-            if (-not $hasInstallIndices -and -not $hasBootImages) { $s += " and " }
-            if (-not $hasBootImages)     { $s += "BootImages" }
-            $m = "No $s defined"
-        }
-    }
-
-    # Anyone set an error message?
-    if (-not [string]::IsNullOrWhiteSpace($m)) {
-        # Something is missing we're done
-        throw ("{0}, re-run with -$RunNext" -f $m)
-    }
-#>
-}
-
 function Invoke-ServiceWork {
     [CmdletBinding()]
     param()
@@ -2105,18 +2155,12 @@ function Invoke-ServiceWork {
 
     Write-Host  "Starting Service workflow..."
 
-    # Sanity check our indices first
-    Test-MissingIndices "Service"
-    # Resolve anything that hasn't been
-    $InstallIndices = Resolve-IndexSelection
+    # Select anything that hasn't been
+    Select-Indices
 
     Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
     Write-Debug   "Invoke-ServiceWork: KBsSSU='$($paths.KBsSSU)' KBsOSCU='$($paths.KBsOSCU)' WimsMounts='$($paths.WimsMounts)'"
 
-    Remove-Folder $paths.WimsLogs
-    Remove-Folder $paths.WimsMounts
-    Remove-Folder $paths.WimsScratch
-    Remove-Folder $paths.WimsServiced
     Ensure-Folder $paths.WimsLogs
     Ensure-Folder $paths.WimsMounts
     Ensure-Folder $paths.WimsScratch
@@ -2400,11 +2444,8 @@ function Invoke-FinalAssembly {
 
     Write-Host  "Starting Final Assembly workflow..."
 
-    # Sanity check our indices first
-    Test-MissingIndices "Final"
-
-    # Resolve anything that hasn't been
-    $InstallIndices = Resolve-IndexSelection
+    # Select anything that hasn't been
+    Select-Indices
 
     Write-Verbose "Invoke-FinalAssembly: WimsServiced='$($paths.WimsServiced)' WimsFinal='$($paths.WimsFinal)'"
 
@@ -2563,37 +2604,32 @@ function Invoke-PrepDestISO {
     function Fetch-Date {
         [CmdletBinding()]
         param(
-            [string]$JsonPath, 
-            [string]$Step = ""
+            [string]$JsonPath 
         )
         try {
             $meta = Read-JsonFile -Path $JsonPath
             $date = [datetime]::Parse($meta.Date)
         }
         catch {
-            if ([string]::IsNullOrEmpty($Path)) {
-                # Any date is never than this
-                return [datetime]::MinValue
-            } else {
-                throw "$(FolderRelName $JsonPath) not found or invalid, run -$(Step) first"
-            }
-          
+            # Any date is never than this
+            return [datetime]::MinValue
         }
         return $date
     }
 
     # Check our prerequites
     # 1. Source folder for the ISO
-    $extractDate = Fetch-Date $extractJson 'Extract'
+    if (Report-Missing -Required @($extractJson)) {
+        throw "See above for missing file details, need to -Clean first, and re-run"
+    }
+    $extractDate = Fetch-Date $extractJson
     
-    # 2. Missing files
+    # 2. Finalized install.wim and boot.wim
     if (Report-Missing -Required @($finalInstallWimJson, $finalBootWimJson, $paths.InstallWimInFinal, $paths.BootWimInFinal)) {
         throw "See above for missing file details, run -Final first"
     }
-
-    # 3. Finalized install.wim and boot.wim
-    $finalInstallWimDate = Fetch-Date $finalInstallWimJson 'Final'
-    $finalBootWimDate    = Fetch-Date $finalBootWimJson 'Final'
+    $finalInstallWimDate = Fetch-Date $finalInstallWimJson
+    $finalBootWimDate    = Fetch-Date $finalBootWimJson
 
     # ---- Step A: Hardlink-copy SrcIsoContent -> DestIsoContent ----
     $prepHardlinkDate = Fetch-Date $prepHardlinkJson
@@ -2675,7 +2711,7 @@ function Invoke-PrepDestISO {
         Stream-FileCopy $paths.BootWimInFinal $paths.BootWimInDest
         Write-JsonFile -Path $prepBootWimJson -Data @{ Date = (Get-Date -Format s) }
     } else {
-        Write-Host "$($names.BootWim) already current ($(Resolve-IndexSelection $prepBootWimJson): $prepBootWimDate)"
+        Write-Host "$($names.BootWim) already current ($(FolderRelName $prepBootWimJson): $prepBootWimDate)"
     }
 
     Write-Host "PrepDestISO workflow complete"
@@ -2688,7 +2724,9 @@ function Invoke-FilesWork {
     [CmdletBinding()]
     param()
 
-    Write-Host "Starting Files workflow..."
+    $silent = $DryRun -or $Clean
+
+    if (-not $silent) { Write-Host "Starting Files workflow..." }
 
     # Lists
     $destFolders = $(
@@ -2768,7 +2806,7 @@ function Invoke-FilesWork {
     }
 
     # Debug dump
-    if ($DebugPreference -eq 'Continue') {
+    if (-not $silent -and ($DebugPreference -eq 'Continue')) {
         Write-Debug "Jobs list:"
         $w = ($jobs.Action | Measure-Object -Maximum -Property Length).Maximum
         foreach ($j in $jobs) {
@@ -2814,7 +2852,7 @@ function Invoke-FilesWork {
     }
 
 
-    Write-Host "Files workflow complete"
+    if (-not $silent) { Write-Host "Files workflow complete" }
 }
 
 # ==============================
@@ -2841,7 +2879,7 @@ function Invoke-CreateISOWork {
         return
     }
     if (-not $DestISO) {
-        Write-Warning "DestISO path is not set, use -DestISO or -ISO is provided"
+        Write-Warning "DestISO path is not set, use -DestISO or -ISO to provide"
         return
     }
     
@@ -2863,14 +2901,14 @@ function Invoke-CreateISOWork {
     }
 
     if ($AutoGeneratedDestISO -or -not $DestISOVolumeLabel) {
-        # Get the metadata from the boot.wim as it is always the smallest file to read
-        $metaBoot               = Get-WimMetadata -WimPath $paths.BootWimInDest
-        $buildServicePack       = "_{0}_{1}" -f $metaBoot.Build, $metaBoot.ServicePackBuild
+        # Get the metadata from the install.wim for the correct build and service pack build
+        $metaInstall            = Get-WimMetadata -WimPath $paths.InstallWimInDest
+        $buildServicePack       = "_{0}_{1}" -f $metaInstall.Build, $metaInstall.ServicePackBuild
         if ($AutoGeneratedDestISO) {
             $DestISO            = $DestISO -replace ([Regex]::Escape($names.DefaultDestISO) + '\.iso$'), ("$($buildServicePack).iso")
         }
         if (-not $DestISOVolumeLabel) {
-            $DestISOVolumeLabel = "Win$($metaBoot.WinOS)_$($metaBoot.Version)_$($metaBoot.Arch)$($buildServicePack)"
+            $DestISOVolumeLabel = "Win$($metaInstall.WinOS)_$($metaInstall.Version)_$($metaInstall.Arch)$($buildServicePack)"
         }
     }
     $bootdata = "2#p0,e,b$etfs#pEF,e,b$efis"
@@ -2976,16 +3014,12 @@ if ($Usage) {
     exit
 }
 
-# ==============================
 # Resolve working folder
-# ==============================
 Write-Verbose "Working folder: $Folder"
 $Folder = Resolve-FullPath $Folder
 Write-Verbose "Resolved working folder: $Folder"
 
-# ==============================
 # Resolve DISM and oscdimg
-# ==============================
 Write-Verbose "Resolving tool paths..."
 $dismExe    = Find-ADKTool -ToolName 'dism.exe'    -ADKSubfolder 'DISM'    -ExplicitPath $dism    -PreferADK:$UseADK -ForceSystem:$UseSystem
 $oscdimgExe = Find-ADKTool -ToolName 'oscdimg.exe' -ADKSubfolder 'Oscdimg' -ExplicitPath $oscdimg -PreferADK:$UseADK -ForceSystem:$UseSystem
@@ -3044,189 +3078,26 @@ $paths.InstallWimInFinal     = Join-Path $paths.WimsFinal   $names.InstallWim
 $paths.BootWimInFinal        = Join-Path $paths.WimsFinal   $names.BootWim
 # Core paths end
 
-# ==============================
 # Resolve source ISO
-# ==============================
-if (-not $ISO) {
-    Write-Verbose "No -ISO specified, searching for *.iso in: $Folder"
-    $isoFiles = @(Get-ChildItem -Path $Folder -Filter '*.iso' -File -ErrorAction SilentlyContinue)
-    if ($isoFiles.Count -eq 0) {
-        $needsISO = $Extract -or $Export -or (-not ($KB -or $Service -or $Drivers -or $Reg -or $Files -or $Prep -or $CreateISO))
-        if ($needsISO -and -not $Clean -and -not $DryRun) {
-            Write-Error "No .iso file found in: $Folder`nPlace the Windows ISO there or use -ISO to specify its path"
-            exit 1
-        }
-        Write-Verbose "No ISO found, continuing (ISO not required for selected operations)"
-        $ISO = $null
-    } elseif ($isoFiles.Count -gt 1) {
-        Write-Error ("Multiple .iso files found in: $Folder`n  {0}`nUse -ISO to specify which one to use" -f ($isoFiles.FullName -join "`n  "))
-        exit 1
-    } else {
-        $ISO = $isoFiles[0].FullName
-        Write-Host (&$LeadIn "Auto-discovered ISO" "$ISO")
-    }
-}
+Validate-ExtractISO
 
-if ($ISO -and (Test-Path $ISO)) {
-    $ISO = Resolve-FullPath $ISO
-    Write-Verbose (&$LeadIn "Resolved ISO path" "$ISO")
-}
-
-# ==============================
-# Resolve destination ISO
-# ==============================
-if (-not $DestISO -and $ISO) {
-    $DestISO = $ISO -replace '\.iso$', ($names.DefaultDestISO + '.iso')
-    $AutoGeneratedDestISO = $true
-    Write-Host (&$LeadIn "Auto-derived DestISO" "$DestISO")
-}
-$DestISO = Resolve-FullPath $DestISO
-
-# ==============================
-# Read ISO / WIM metadata for WinOS / Version / Arch and index list
-# Priority: 1) MetadataJson  2) SrcIsoContent WIMs  3) Mount ISO
-# ==============================
-$InstallImages   = @()
-$BootImages      = @()
-$IsoMetaResolved = $false
-$MetaSrc         = 'To be determined at export time'
-
-    # Helper: apply WimMetadata result to the script-scope variables
-    function Apply-WimMetadata {
-        param([object]$Meta)
-        if (-not $script:WinOS)   { $script:WinOS   = $Meta.WinOS }
-        if (-not $script:Version) { $script:Version = $Meta.Version }
-        if (-not $script:Arch)    { $script:Arch    = $Meta.Arch }
-    }
-    function Try-WimMetadata {
-        param([string]$InstallWimPath, [string]$InstallEsdPath, [string]$BootWimPath, [string]$From)
-        $installWim = if     (Test-Path $InstallWimPath) { $InstallWimPath }
-                      elseif (Test-Path $InstallEsdPath) { $InstallEsdPath }
-                      else   { $null }
-        $bootWim    = if     (Test-Path $BootWimPath)    { $BootWimPath }
-                      else   { $null }
-        if ($installWim -and $bootWim) {
-            Write-Verbose "Reading metadata from $($From): $InstallWimPath and $BootWimPath"
-            try {
-                $metaInstall = Get-WimMetadata -WimPath $InstallWimPath
-                $metaBoot    = Get-WimMetadata -WimPath $BootWimPath
-                if ($metaInstall.InstallImages.Count -gt 0) {
-                    $script:InstallImages = @($metaInstall.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-                    Apply-WimMetadata $metaInstall
-                }
-                if ($metaBoot.BootImages.Count -gt 0) {
-                    $script:BootImages = @($metaBoot.BootImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-                }
-            } catch {
-                Write-Warning "Failed to read WIM metadata from '$From': $_"
-            }
-            if (($script:InstallImages.Count -gt 0) -and ($script:BootImages.Count -gt 0)) { $script:IsoMetaResolved = $true; $script:MetaSrc = $From }
-        }
-    }
-
-# 1) Prefer cached MetadataJson if it matches the current ISO
-$metadataJson = $paths.MetadataJson
-$wimMeta      = Read-JsonFile -Path $metadataJson
-if ($wimMeta -and (-not $ISO -or $wimMeta.ISOPath -eq $ISO)) {
-    Write-Verbose "Loading metadata from $metadataJson"
-    $InstallImages = @($wimMeta.InstallImages | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-    $BootImages    = @($wimMeta.BootImages    | ForEach-Object { [PSCustomObject]@{ Index = [int]$_.Index; Name = $_.Name } })
-    Apply-WimMetadata $wimMeta
-    if (($InstallImages.Count -gt 0) -and ($BootImages.Count -gt 0)) { $isoMetaResolved = $true; $MetaSrc = $names.MetadataJson }
-}
-
-if (-not $DryRun -and -not $Clean) {
-    # 2) Fall back to SrcIsoContent on disk
-    if (-not $isoMetaResolved -and (Test-Path $paths.SourcesInSrc)) {
-        Try-WimMetadata -InstallWimPath $paths.InstallWimInSrc `
-                        -InstallEsdPath $paths.InstallEsdInSrc `
-                        -BootWimPath    $paths.BootWimInSrc `
-                        -From           "SrcIsoContent"
-    }
-
-    # 3) Mount the ISO briefly if still needed
-    if (-not $isoMetaResolved -and $ISO -and (Test-Path $ISO)) {
-        Write-Verbose "Mounting ISO for metadata: $ISO"
-        $metaDiskImg = Mount-DiskImage -ImagePath $ISO -PassThru -ErrorAction SilentlyContinue
-        try {
-            # Wait for the volume to actually appear
-            $vol = $null
-            for ($r = 0; $r -lt 5 -and $null -eq $vol; $r++) {
-                $vol = $metaDiskImg | Get-Volume -ErrorAction SilentlyContinue
-                if ($null -eq $vol) { Start-Sleep -Seconds 1 }
-            }
-            if ($null -eq $vol) { throw "Timeout waiting for ISO volume to initialize" }
-
-            $metaDrive = $vol.DriveLetter + ':\'
-            Try-WimMetadata -InstallWimPath "$metaDrive$($paths.InstallWimInIso)" `
-                            -InstallEsdPath "$metaDrive$($paths.InstallEsdInIso)" `
-                            -BootWimPath    "$metaDrive$($paths.BootWimInIso)" `
-                            -From           "Mounted ISO"
-        } finally {
-            if ($metaDiskImg -and $metaDiskImg.Attached) {
-                Write-Verbose "Dismounting ISO..."
-                Dismount-DiskImage -ImagePath $ISO -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
-    }
-}
-
-# Hard defaults for anything still unresolved
-if (-not $WinOS)   { $WinOS   = '11' }
-if (-not $Arch)    { $Arch    = 'x64' }
-if (-not $Version) { $Version = if ($WinOS -eq '10') { '22H2' } else { '25H2' } }
-
-# ==============================
-# ShowIndices
-# ==============================
-if ($ShowIndices) {
-    if ($InstallImages.Count -eq 0) {
-        Write-Error "Cannot show indices: no metadata available, run -Extract first, or provide -ISO"
-        exit 1
-    }
-    Write-Host "`nAvailable images in $($names.InstallWim) [source: $MetaSrc]:`n"
-    Write-Host ("{0,6}  {1}" -f 'Index', 'Name')
-    Write-Host ("{0,6}  {1}" -f '------', '----')
-    foreach ($img in $InstallImages) { Write-Host ("{0,6}  {1}" -f $img.Index, $img.Name) }
-    Write-Host ""
-    exit 0
-}
-
-# ==============================
-# Resolve index selection
-# ==============================
-$InstallIndices = @()
-if ($InstallImages.Count -gt 0) {
-    $InstallIndices = Resolve-IndexSelection
-} else {
-    Write-Verbose "Image list unavailable yet, index selection deferred until -Export"
-}
-
-# ==============================
 # Determine work modes
-# ==============================
 $workSwitches = @()
-if ($Extract)   { $workSwitches += 'Extract' }
 if ($Export)    { $workSwitches += 'Export' }
 if ($KB)        { $workSwitches += 'KB' }
 if ($Service)   { $workSwitches += 'Service' }
 if ($Final)     { $workSwitches += 'Final' }
 if ($Prep)      { $workSwitches += 'Prep' }
 if ($Files)     { $workSwitches += 'Files' }
-if ($Drivers)   { $workSwitches += 'Drivers' }
-if ($Reg)       { $workSwitches += 'Reg' }
 if ($CreateISO) { $workSwitches += 'CreateISO' }
 
 if ($All -or $Most -or (-not $workSwitches)) {
-    $Extract = $true
     $Export  = $true
     $KB      = $true
     $Service = $true
     $Final   = $true
     $Prep    = $true
     $Files   = $true
-    $Drivers = $true
-    $Reg     = $true
     if ($Most) {
         $workSwitches = @('Most')
     } else {
@@ -3317,12 +3188,8 @@ if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
 }
 
 
-# ==============================
 # Main orchestration
-# ==============================
-
 try {
-    if ($Extract)   { Invoke-ExtractISO }
     if ($Export)    { Invoke-Export }
     if ($KB)        { Invoke-KBWork }
     if ($Service)   { Invoke-ServiceWork }
