@@ -15,5 +15,8 @@ if not exist "%PS1%" (
 :: Pass all arguments exactly as received
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
 
+:: Let us see what happened
+pause
+
 endlocal
 exit /b %ERRORLEVEL%
