@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "175f767"
+$GitHash = "480666d"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -251,6 +251,7 @@ $names = [ordered]@{
     InstallRegsCmd         = 'InstallRegs.cmd'
     UpdateNETCmd           = 'Update.NET.cmd'
     UpdateNETPs1           = 'Update.NET.ps1'
+    UpdateEdgeCmd          = 'UpdateEdge.cmd'
     WindowsInstallationCmd = 'WindowsInstallation.cmd'
     PostSetupCmd           = 'PostSetup.cmd'
     MetadataJson           = 'wim-metadata.json'
@@ -630,6 +631,7 @@ function Stream-FolderCopy {
 }
 
 function Read-JsonFile {
+    [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path $Path -PathType Leaf)) { return $null }
     try   { Get-Content $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
@@ -637,6 +639,7 @@ function Read-JsonFile {
 }
 
 function Write-JsonFile {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][object]$Data
@@ -650,7 +653,9 @@ function Write-JsonFile {
     }
     $Data | ConvertTo-Json -Depth 6 | Set-Content -Path $Path -Encoding UTF8
 }
+
 function Fetch-Date {
+    [CmdletBinding()]
     [OutputType([datetime])]
     param([string]$JsonPath)
     
@@ -674,6 +679,27 @@ function Fetch-Date {
         # Parsing crashed
         return $MissingTime
     }
+}
+function Rebuild-Required {
+    [CmdletBinding()]
+    param(
+        [string]$DependencyJsonPath,
+        [string]$DestJsonPath,
+        [string]$SwitchName
+    )
+
+    # Dependency file missing is fatal as you need to rebuild it
+    $depDate = Fetch-Date $DependencyJsonPath
+    if ($depDate -eq $MissingTime) {
+        throw "$(FolderRelName $DependencyJsonPath) missing, you need to re-run with $SwitchName"   
+    }
+    if ($depDate -eq $NoTime) {
+        throw "$(FolderRelName $DependencyJsonPath) corrupt, you need to re-run with $SwitchName"
+    }
+
+    # Rebuild it if the dependency is newer than the destination
+    $destDate = Fetch-Date $DestJsonPath
+    return ($depDate -gt $destDate)
 }
 
 function Run-Dism {
@@ -726,7 +752,7 @@ function Run-Dism {
 
             # Always send raw output to Stream 4 (Verbose) if anyone is listening
             if ($line.Trim()) { 
-                Write-Verbose ("{0}{1}" -f $spaces, $($line.Trim()))
+                Write-Verbose ($("{0}{1}" -f $spaces, $($line.Trim())))
             }
 
             if ($Capture) {
@@ -739,7 +765,7 @@ function Run-Dism {
                     $percentBucket  = [math]::Floor($currentPercent / 10) * 10
                     
                     if ($percentBucket -gt $lastReportedPercent -and $percentBucket -le 100) {
-                        Write-Host ("{0}Progress: $percentBucket%" -f $spaces)
+                        Write-Host ($("{0}Progress: $percentBucket%" -f $spaces))
                         $lastReportedPercent = $percentBucket
                     }
                 }
@@ -765,7 +791,7 @@ function Run-Dism {
                 throw $msg
             }
         }
- #>
+#>
 
         # Callers that need the exit status check $LASTEXITCODE directly
         $global:LASTEXITCODE = $rc
@@ -2114,44 +2140,46 @@ function Invoke-Export {
 
     function Export-WimImage {
         param(
-            [PSCustomObject] $img,     # object with Index and Name properties
+            [System.Object[]]$Images,
             [string]         $WimName, # install or boot
             [string]         $Src      # source WIM file path
         )
-        $idx     = $img.Index
-        $imgName = $img.Name
-        Write-Host "  [Index $idx] $imgName"
+        foreach ($img in $Images) {
+            $idx     = $img.Index
+            $imgName = $img.Name
+            Write-Host "  [Index $idx] $imgName"
 
-        $installDest = Join-Path $paths.WimsIndices ("{0}_{1}"      -f $idx, $WimName)
-        $installJson = Join-Path $paths.WimsIndices ("{0}_{1}.json" -f $idx, $WimName)
-        $existInstall = Read-JsonFile -Path $installJson
-        $needInstall  = (-not $existInstall) -or ([datetime]::Parse($existInstall.Date) -le $extractDate)
-
-        if (-not $needInstall) {
-            Write-Host "    $WimName index $idx already exported ($($existInstall.Date))"
-        } else {
-            Write-Host "    Exporting $WimName index $idx..."
-            Run-Dism @("/Export-Image", "`"/SourceImageFile:$Src`"", "`"/SourceIndex:$idx`"",
-                       "`"/DestinationImageFile:$installDest`"", "/Compress:None", "/CheckIntegrity") -Indent 4
-            $rc = $LASTEXITCODE
-            if ($rc -ne 0) {
-                Write-Warning "    DISM export failed for $WimName index $idx (exit $(& $Hex $rc))"
-                Write-Warning "    Try running this script again, skipping export for this index for now"
-                return
+            $exportDest = Join-Path $paths.WimsIndices ("{0}_{1}"      -f $idx, $WimName)
+            $exportJson = Join-Path $paths.WimsIndices ("{0}_{1}.json" -f $idx, $WimName)
+            if (Rebuild-Required $extractJson $exportJson "-All -Clean") {
+                Write-Host "    Exporting $WimName index $idx..."
+                # Dism does not overwrite existing files, so we need to remove them first
+                Remove-Item $exportDest -Force -ErrorAction SilentlyContinue
+                Run-Dism @(
+                    "/Export-Image",
+                    "`"/SourceImageFile:$Src`"",
+                    "`"/SourceIndex:$idx`"",
+                    "`"/DestinationImageFile:$exportDest`"",
+                    "/Compress:None",
+                    "/CheckIntegrity"
+                ) -Indent 4
+                $rc = $LASTEXITCODE
+                if ($rc -ne 0) {
+                    Write-Warning "    DISM export failed for $WimName index $idx (exit $(& $Hex $rc))"
+                    Write-Warning "    Try running this script again or using -Clean, skipping export for this index for now"
+                    continue
+                }
+                Write-JsonFile -Path $exportJson -Data @{ Date = (Get-Date -Format s); Index = $idx; Name = $imgName }
+                Write-Host "    $WimName index $idx exported"
+            } else {
+                Write-Host "    $WimName index $idx already exported"
             }
-            Write-JsonFile -Path $installJson -Data @{ Date = (Get-Date -Format s); Index = $idx; Name = $imgName }
-            Write-Host "    $WimName index $idx exported"
         }
     }
 
-    # Export each selected install image
-    foreach ($img in $InstallIndices) {
-        Export-WimImage -img $img -WimName $names.InstallWim -Src $installSrc
-    }
-    # Export each boot image
-    foreach ($img in $BootImages) {
-        Export-WimImage -img $img -WimName $names.BootWim -Src $bootSrc
-    }
+    # Export each selected image
+    Export-WimImage -Images $InstallIndices -WimName $names.InstallWim -Src $installSrc
+    Export-WimImage -Images $BootImages -WimName $names.BootWim -Src $bootSrc
 
     Write-Host "Export workflow complete"
 }
@@ -2355,11 +2383,7 @@ function Invoke-ServiceWork {
 
             if ($Unmount) {
                 Write-Host "    Unmounting $idxName at $relMountDir (commit)..."
-                Run-Dism @(
-                    "/Unmount-Image",
-                    "`"/MountDir:$MountDir`"",
-                    "/Commit"
-                ) -Indent 4
+                Run-Dism @("/Unmount-Image", "`"/MountDir:$MountDir`"", "/Commit") -Indent 4
                 if ($LASTEXITCODE -ne 0) {
                     throw "DISM unmount (commit) failed for '$relMountDir' (exit $(& $Hex $LASTEXITCODE))"
                 }
@@ -2370,11 +2394,7 @@ function Invoke-ServiceWork {
             Write-Host "    ERROR in Add-Packages for $($idxName): $_" -ForegroundColor Red
             if ($isCurrentlyMounted -and (Test-Path $MountDir)) {
                 Write-Host "    CRITICAL FAILURE DETECTED: Discarding mounted image changes at $($MountDir) to protect original WIM..." -ForegroundColor Yellow
-                Run-Dism @(
-                    "/Unmount-Image",
-                    "`"/MountDir:$MountDir`"",
-                    "/Discard"
-                ) -Indent 4
+                Run-Dism @("/Unmount-Image", "`"/MountDir:$MountDir`"", "/Discard") -Indent 4
             }
             throw
         }
@@ -2532,37 +2552,6 @@ function Invoke-FinalAssembly {
     Ensure-Folder $paths.WimsServiced
     Ensure-Folder $paths.WimsFinal
 
-    function Find-AnyOldServiced {
-        [CmdletBinding()]
-        param(
-            [Parameter(Mandatory=$true)]
-            [System.Object[]]$Images,
-
-            [Parameter(Mandatory=$true)]
-            [string]$WimLabel
-        )
-
-        $finalJson = Join-Path $paths.WimsFinal ("{0}.json" -f $WimLabel)
-        $finalDate = Fetch-Date $finalJson
-
-        foreach ($img in $Images) {
-            $idx = $img.Index
-            $srv = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
-            if (-not (Test-Path $srv)) {
-                throw "Missing serviced $WimLabel index $idx ($($img.Name)), run -Service again"
-            }
-
-            $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
-            $sd = Fetch-Date $srvJson
-            if ($sd -ge $finalDate) {
-                Write-Host "$WimLabel index $idx ($($img.Name)) is newer than final, rebuilding"
-                return $true
-            }
-        }
-
-        return $false
-    }
-
     function Build-FinalImage {
         [CmdletBinding()]
         param(
@@ -2576,48 +2565,55 @@ function Invoke-FinalAssembly {
             [string]$DestPath
         )
 
-        Remove-Folder $DestPath
-
+        $finalJson = Join-Path $paths.WimsFinal ("{0}.json" -f $WimLabel)
+        
+        # Make sure all the serviced indices are newer than the final
+        $needsRebuild = $false
         foreach ($img in $Images) {
             $idx = $img.Index
-
-            $src = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
-            if (-not (Test-Path $src)) {
+            $srv = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
+            if (-not (Test-Path $srv)) {
                 throw "Missing serviced $WimLabel index $idx ($($img.Name)), run -Service again"
             }
 
-            $baseArgs = @(
-                '/Export-Image',
-                "`"/DestinationImageFile:$DestPath`"",
-                '/SourceIndex:1',
-                "`"/Compress:$DismCompression`"",
-                '/CheckIntegrity'
-            )
-
-            Write-Host "  Adding $WimLabel index $idx from $(FolderRelName $src)"
-            Run-Dism ($baseArgs + @("`"/SourceImageFile:$src`"")) -Indent 2
-            if ($LASTEXITCODE -ne 0) {
-                throw "ERROR exporting $WimLabel index $idx ($($img.Name)), run -Service again"
+            $srvJson = Join-Path $paths.WimsServiced ("{0}_{1}.json" -f $idx, $WimLabel)
+            if (Rebuild-Required $srvJson $finalJson "-Service") {
+                Write-Host "$WimLabel index $idx ($($img.Name)) is newer than final, rebuilding"
+                $needsRebuild = $true
+                break
             }
         }
 
-        $finalJson = Join-Path $paths.WimsFinal ("{0}.json" -f $WimLabel)
-        Write-JsonFile -Path $finalJson -Data @{ Date = (Get-Date -Format s) }
+        if ($needsRebuild) {
+            Write-Host "Rebuilding final $WimLabel..."
+            Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
+
+            foreach ($img in $Images) {
+                $idx = $img.Index
+                $src = Join-Path $paths.WimsServiced ("{0}_{1}" -f $idx, $WimLabel)
+
+                Write-Host "  Adding $WimLabel index $idx from $(FolderRelName $src)"
+                Run-Dism @(
+                    "/Export-Image",
+                    "`"/DestinationImageFile:$DestPath`"",
+                    "`"/SourceImageFile:$src`"",
+                    "/SourceIndex:1",
+                    "`"/Compress:$DismCompression`"",
+                    "/CheckIntegrity"
+                ) -Indent 4
+                if ($LASTEXITCODE -ne 0) {
+                    throw "ERROR exporting $WimLabel index $idx ($($img.Name)), run -Service again"
+                }
+            }
+
+            Write-JsonFile -Path $finalJson -Data @{ Date = (Get-Date -Format s) }
+        } else {
+            Write-Host "Final $WimLabel is up-to-date"
+        }
     }
 
-    if (Find-AnyOldServiced $InstallIndices $names.InstallWim) {
-        Write-Host "Rebuilding final $($names.InstallWim)..."
-        Build-FinalImage $InstallIndices $names.InstallWim $paths.InstallWimInFinal
-    } else {
-        Write-Host "Final $($names.InstallWim) is up-to-date"
-    }
-
-    if (Find-AnyOldServiced $BootImages $names.BootWim) {
-        Write-Host "Rebuilding final $($names.BootWim)..."
-        Build-FinalImage $BootImages $names.BootWim $paths.BootWimInFinal
-    } else {
-        Write-Host "Final $($names.BootWim) is up-to-date"
-    }
+    Build-FinalImage $InstallIndices $names.InstallWim $paths.InstallWimInFinal
+    Build-FinalImage $BootImages $names.BootWim $paths.BootWimInFinal
 
     Write-Host "Final workflow complete"
 }
@@ -2779,6 +2775,7 @@ function Invoke-FilesWork {
         $names.InstallRegsCmd
         $names.UpdateNETCmd
         $names.UpdateNETPs1
+        $names.UpdateEdgeCmd
         $names.WindowsInstallationCmd
         $names.PostSetupCmd
     )
@@ -3265,7 +3262,7 @@ try {
                           Where-Object { (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue).Count -gt 0 })
         foreach ($mountDir in $leftoverDirs) {
             Write-Host "Cleanup: discarding leftover DISM mount at $($mountDir.FullName)..."
-            Run-Dism @('/Unmount-Image', "`"/MountDir:$($mountDir.FullName)`"", "/Discard")
+            Run-Dism @("/Unmount-Image", "`"/MountDir:$($mountDir.FullName)`"", "/Discard")
             Remove-Folder $mountDir.FullName
         }
     }

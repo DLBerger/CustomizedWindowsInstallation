@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "175f767"
+$GitHash = "480666d"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -254,6 +254,8 @@ $names = [ordered]@{
     UpdateEdgeCmd          = 'UpdateEdge.cmd'
     WindowsInstallationCmd = 'WindowsInstallation.cmd'
     PostSetupCmd           = 'PostSetup.cmd'
+    CleanupDriversCmd      = 'CleanupDrivers.cmd'
+    CleanupDriversPs1      = 'CleanupDrivers.ps1'
     MetadataJson           = 'wim-metadata.json'
     ManifestJson           = 'manifest.json'
     ExtractJson            = 'extract.json'
@@ -2778,6 +2780,8 @@ function Invoke-FilesWork {
         $names.UpdateEdgeCmd
         $names.WindowsInstallationCmd
         $names.PostSetupCmd
+        $names.CleanupDriversCmd
+        $names.CleanupDriversPs1
     )
 
     # Copy these KBs folders, if they exist
