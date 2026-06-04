@@ -9,7 +9,7 @@ containing official Windows installation media (Windows 10 22H2+ or Windows 11 2
 
 It supports:
 - Downloading OS cumulative updates and .NET updates from the Microsoft Update Catalog
-- Exporting all third-party drivers from the current system into $WinPEDriver$
+- Exporting all third-party drivers from the current system into Drivers
 - Exporting registry keys into .reg files
 - Dry-run mode (no changes made)
 - Clean mode (remove generated content)
@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "480666d"
+$GitHash = "f742b8a"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -233,7 +233,7 @@ $names = [ordered]@{
     DefaultDestISO         = '_KBs'
     KBs                    = 'KBs'
     Wims                   = 'Wims'
-    WinPEDriver            = '$WinPEDriver$'
+    Drivers                = 'Drivers'
     Registry               = 'Registry'
     Content                = 'Content'
     Sources                = 'sources'
@@ -2755,6 +2755,7 @@ function Invoke-Prep {
 # ==============================
 # File work for the destination ISO
 # ==============================
+
 function Invoke-FilesWork {
     [CmdletBinding()]
     param()
@@ -2765,7 +2766,7 @@ function Invoke-FilesWork {
 
     # Lists
     $destFolders = $(
-        $paths.WinPEDriverRoot
+        $paths.DriversRoot
         $paths.RegistryRoot
     )
 
@@ -2790,34 +2791,56 @@ function Invoke-FilesWork {
         $names.MISC
     )
 
-<#
-    # Each entry is: TargetFile, List of (SearchPattern, Replacement) pairs to apply to the target file before copying to the destination
-    # **** The SearchPattern needs to be a regex to match the line to replace with the Replacement ****
-    $transforms = @(
-        @($names.ExportDriversCmd, @(
-            @('set "FLD=$WinPEDriver$"', $names.WinPEDriver)
-        )),
-        @($names.InstallDriversCmd, @(
-            @('set "FLD=$WinPEDriver$"', $names.WinPEDriver)
-        )),
-        @($names.ExportRegsPs1, @(
-            @('set "FLD=Registry"', $names.Registry)
-        )),
-        @($names.InstallRegsCmd, @(
-            @("$RegistryRoot = 'Registry'", $names.Registry)
-        ))
-    )
-
-    #
     # Transforms block
-    #
-    # These transforms rewrite destination paths for special cases
-    #
     $transforms = @(
-        @{ Match = $names.SetupConfigCleanIni;   To = $paths.SetupConfigIni }
-        @{ Match = $names.SetupConfigUpgradeIni; To = $paths.SetupConfigIni }
+        @{
+            File = $names.ExportDriversCmd
+            Rules = @(
+                @{ Pattern = '(?i)^(\s*set\s+"FLD=)[^"]*("\s*)$'; Replacement = $names.Drivers }
+            )
+        }
+        @{
+            File = $names.ExportRegsPs1
+            Rules = @(
+                @{ Pattern = '(?i)^(\s*param\s*\(\s*\[string\]\s*\$Folder\s*=\s*'')[^''].*?(''\s*\)\s*)$'; Replacement = '.\' + $names.Registry }
+            )
+        }
+        @{
+            File = $names.InstallDriversCmd
+            Rules = @(
+                @{ Pattern = '(?i)^(\s*set\s+"FLD=)[^"]*("\s*)$'; Replacement = $names.Drivers }
+            )
+        }
+        @{
+            File = $names.InstallRegsCmd
+            Rules = @(
+                @{ Pattern = '(?i)^(\s*set\s+"FLD=)[^"]*("\s*)$'; Replacement = $names.Registry }
+            )
+        }
+        @{
+            File = $names.PostSetupCmd
+            Rules = @(
+                # Fixed capture group 2 to lock onto the closing quote, preventing .cmd.cmd duplication
+                @{ Pattern = '(?i)^(\s*set\s+"REGCMD=%SRC%\\)[^"]*("\s*)$'; Replacement = $names.InstallRegsCmd }
+                @{ Pattern = '(?i)^(\s*set\s+"NETCMD=%SRC%\\)[^"]*("\s*)$'; Replacement = $names.UpdateNETCmd }
+                @{ Pattern = '(?i)^(\s*set\s+"EDGECMD=%SRC%\\)[^"]*("\s*)$'; Replacement = $names.UpdateEdgeCmd }
+            )
+        }
+        @{
+            File = $names.UpdateNETPs1
+            Rules = @(
+                # Dynamically constructs the path string purely from your tracking variables
+                @{ Pattern = '(?i)^(\s*\$root\s*=\s*Join-Path\s*\$scriptRoot\s*'')[^''].*?(''\s*)$'; Replacement = $names.KBs + '\' + $names.NET }
+                @{ Pattern = '(?i)^(\s*\$manifest\s*=\s*Join-Path\s*\$root\s*'')[^''].*?(''\s*)$'; Replacement = $names.ManifestJson }
+            )
+        }
+        @{
+            File = $names.WindowsInstallationCmd
+            Rules = @(
+                @{ Pattern = '(?i)^(\s*set\s+"DRV=)[^"]*("\s*)$'; Replacement = $names.Drivers }
+            )
+        }
     )
-#>
 
     # Build jobs list
     $jobs = @()
@@ -2854,12 +2877,66 @@ function Invoke-FilesWork {
     }
 
     # Missing-file check
-    $missing = $jobs |
+    $fileCopySources = $jobs |
         Where-Object   { $_.Action -like '*FileCopy' } |
         ForEach-Object { $_.From }
 
+    $transformSources = @()
+    foreach ($t in $transforms) {
+        $transformSources += Join-Path $Folder $t.File
+    }
+
+    $missing = @($fileCopySources + $transformSources) | Sort-Object -Unique
+
     if (Report-Missing -Required $missing) {
         throw "Boot files are missing from $Folder"
+    }
+
+    function Transform-File {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$SourcePath,
+            [Parameter(Mandatory = $true)]
+            [string]$DestinationPath,
+            [Parameter(Mandatory = $true)]
+            [int]$Indent
+        )
+
+        $fileName = [System.IO.Path]::GetFileName($SourcePath)
+        $lines = Get-Content -LiteralPath $SourcePath
+
+        $fileTransform = $null
+        foreach ($t in $transforms) {
+            if ($t.File -eq $fileName) {
+                $fileTransform = $t.Rules
+                break
+            }
+        }
+
+        $padding = ' ' * $Indent
+        $verb = if ($null -eq $fileTransform) { 'Copying' } else { 'Transforming' }
+        Write-Host ("{0}{1} {2} to {3}" -f $padding, $verb, (FolderRelName $SourcePath), (FolderRelName $DestinationPath))
+
+        $processedLines = New-Object System.Collections.Generic.List[string]
+
+        foreach ($line in $lines) {
+            $newLine = $line
+            if ($null -ne $fileTransform) {
+                foreach ($rule in $fileTransform) {
+                    $pattern = $rule.Pattern
+                    $replacement = $rule.Replacement
+                    if ($newLine -match $pattern) {
+                        Write-Debug "Transforming line: $newLine with pattern: $pattern and replacement: $replacement"
+                        $newLine = $Matches[1] + $replacement + $Matches[2]
+                        Write-Debug "Transformed line: $newLine"
+                    }
+                }
+            }
+            $processedLines.Add($newLine)
+        }
+
+        $processedLines -join "`r`n" | Set-Content -LiteralPath $DestinationPath -Encoding ascii
     }
 
     # Execute each job
@@ -2873,12 +2950,12 @@ function Invoke-FilesWork {
             'FileCopy' {
                 if     ($Clean)  { Clean-File $j.To }
                 elseif ($DryRun) { Write-Host "[DryRun] Would write : $(FolderRelName $j.To)" }
-                else             { Stream-FileCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete -Indent 2 }
+                else             { Transform-File -SourcePath $j.From -DestinationPath $j.To -Indent 2 }
             }
             'SubFileCopy' {
                 if     ($Clean)  { <# Parent folder already deleted #>}
                 elseif ($DryRun) { Write-Host "[DryRun] Would write : $(FolderRelName $j.To)" }
-                else             { Stream-FileCopy -SourcePath $j.From -DestinationPath $j.To -NoComplete -Indent 2 }
+                else             { Transform-File -SourcePath $j.From -DestinationPath $j.To -Indent 2 }
             }
             'SubFolderCopy' {
                 if     ($Clean)  { <# Parent folder already deleted #>}
@@ -2888,7 +2965,6 @@ function Invoke-FilesWork {
             }
         }
     }
-
 
     if (-not $silent) { Write-Host "Files workflow complete" }
 }
@@ -3095,7 +3171,7 @@ $paths.SetupExeInDest        = Join-Path $paths.DestIsoContent $names.SetupExe
 $paths.SourcesInDest         = Join-Path $paths.DestIsoContent $names.Sources
 $paths.BootWimInDest         = Join-Path $paths.SourcesInDest $names.BootWim
 $paths.InstallWimInDest      = Join-Path $paths.SourcesInDest $names.InstallWim
-$paths.WinPEDriverRoot       = Join-Path $paths.DestIsoContent $names.WinPEDriver
+$paths.DriversRoot           = Join-Path $paths.DestIsoContent $names.Drivers
 $paths.RegistryRoot          = Join-Path $paths.DestIsoContent $names.Registry
 $paths.WinreWimInWim         = Join-Path 'Windows\System32\Recovery' $names.WinreWim
 $paths.KBsRoot               = Join-Path $Folder $names.KBs

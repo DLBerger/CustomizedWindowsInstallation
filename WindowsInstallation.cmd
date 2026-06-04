@@ -2,7 +2,7 @@
 setlocal
 
 set "SRC=%~dp0"
-set "DRV=$WinPEDriver$"
+set "DRV=Drivers"
 
 :: ----------------------------------------------------------------------------
 ::  Validate Driver Folder Presence

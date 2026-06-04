@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 # Root folder containing manifest.json and payloads
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$root       = Join-Path $scriptRoot 'KBs\Net'
+$root       = Join-Path $scriptRoot 'KBs\NET'
 $manifest   = Join-Path $root 'manifest.json'
 
 if (-not (Test-Path $manifest)) {

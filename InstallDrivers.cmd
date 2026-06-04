@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "SRC=%~dp0"
-set "FLD=$WinPEDriver$"
+set "FLD=Drivers"
 set "DRIVERDIR=%SRC%%FLD%"
 
 if not exist "%DRIVERDIR%" (
@@ -10,6 +10,6 @@ if not exist "%DRIVERDIR%" (
     exit /b 1
 )
 
-pnputil /add-driver "%DRIVERDIR%\*.inf" /subdirs /install > "%DRIVERDIR%\pnputil.log" 2>&1
+pnputil /add-driver "%DRIVERDIR%\*.inf" /subdirs /install
 endlocal
 exit /b %ERRORLEVEL%

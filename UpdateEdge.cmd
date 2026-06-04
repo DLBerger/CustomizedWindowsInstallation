@@ -27,14 +27,14 @@ goto :EndEdgeUpdate
 
 :CheckFileSize
 :: %~z1 expands the first argument passed to this subroutine to its file size in bytes
-if %~z1 GT 0 (
+if "%~z1"=="0" (
+    echo ERROR: Curl pulled down an empty 0-byte file! Installation aborted.
+    del /f /q %1
+) else (
     echo [OK] Verified valid payload download (%~z1 bytes). Installing...
     start /wait "" msiexec.exe /i %1 /qn /norestart
     del /f /q %1
     echo Edge update process complete.
-) else (
-    echo ERROR: Curl pulled down an empty 0-byte file! Installation aborted.
-    del /f /q %1
 )
 goto :eof
 
