@@ -20,14 +20,14 @@ call "%REGCMD%"
 echo Updating .NET
 call "%NETCMD%"
 
-echo Updating Microsoft Edge
-call "%EDGECMD%"
-
 echo Updating with winget
 winget update --all --silent
 
 echo Updating Windows Store apps
 store updates --apply
+
+echo Updating Microsoft Edge
+call "%EDGECMD%"
 
 echo.
 echo Updates complete
