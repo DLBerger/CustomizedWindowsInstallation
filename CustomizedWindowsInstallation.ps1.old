@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "2ef88bc"
+$GitHash = "29aabb3"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -1323,288 +1323,6 @@ function Validate-ExtractISO {
 # KBs section
 # =========================
 
-# =========================
-# HTML-based Update Catalog search
-# =========================
-
-<# Copilot's HTMHtmlAgilityPack.HtmlDocument free suggestions
-
-1. Make Invoke-CatalogRequest return raw HTML (string)
-$Response = Invoke-WebRequest @Params
-
-Write-Debug "RawContent length = $($Response.RawContent.Length)"
-
-$content = $Response.Content
-Write-Debug "Content length = $($content.Length)"
-return $content
-
-
-2. Update Search-UpdateCatalogHtml to use the raw HTML string
-$html = Invoke-CatalogRequest -Uri $Uri
-if (-not $html) {
-    Write-Warning "No HTML returned from $Uri"
-    return
-}
-
-Write-Verbose "Extracting update IDs from HTML"
-
-$pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-$matches = [regex]::Matches($html, $pattern)
-
-3. Add a helper: Get-CatalogSupersededBy (tight, aligned to your HTML)
-function Get-CatalogSupersededBy {
-    param([string]$Html)
-
-    $section = ($Html -split 'id="supersededbyInfo"')[1]
-    if (-not $section) { return @() }
-
-    $pattern = '<a[^>]*>([^<]+)</a>'
-
-    $matches = [regex]::Matches(
-        $section,
-        $pattern,
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    return $matches |
-        ForEach-Object { $_.Groups[1].Value.Trim() } |
-        Where-Object { $_ -ne "" }
-}
-
-4. Convert Get-UpdateDetails to pure regex (no HtmlAgilityPack)
-$detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
-$html = $detailsResponse.Content
-
-# Title
-$title = ""
-$titleMatch = [regex]::Match(
-    $html,
-    '<span[^>]*id="ScopedViewHandler_titleText"[^>]*>(.*?)</span>',
-    [System.Text.RegularExpressions.RegexOptions]::Singleline
-)
-if ($titleMatch.Success) {
-    $title = $titleMatch.Groups[1].Value.Trim()
-}
-Write-Verbose ("Title: {0}" -f $title)
-
-# KB
-$kb = ""
-$kbMatch = [regex]::Match($title, "KB\d+")
-if ($kbMatch.Success) { $kb = $kbMatch.Value }
-Write-Verbose ("KB: {0}" -f $kb)
-
-# SupersededBy
-$supersededBy = Get-CatalogSupersededBy $html
-
-#>
-
-function Invoke-CatalogRequest {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Uri
-    )
-
-    Write-Verbose "GET $Uri"
-
-    try {
-        $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-        $Headers = @{
-            "Cache-Control" = "no-cache"
-            "Pragma"        = "no-cache"
-            "User-Agent"    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        }
-
-        $Params = @{
-            Uri             = $Uri
-            Headers         = $Headers
-            UseBasicParsing = $true
-            ErrorAction     = "Stop"
-        }
-
-        $Response = Invoke-WebRequest @Params
-
-        Write-Debug "RawContent length = $($Response.RawContent.Length)"
-
-        $HtmlDoc = [HtmlAgilityPack.HtmlDocument]::new()
-        $HtmlDoc.LoadHtml($Response.RawContent.ToString())
-
-        return $HtmlDoc
-    }
-    catch {
-        Write-Warning "Failed: $_"
-        return $null
-    }
-    finally {
-        [Net.ServicePointManager]::SecurityProtocol = $oldProtocol
-    }
-}
-
-function Search-UpdateCatalogHtml {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Query,
-
-        [Parameter(Mandatory)]
-        [int]$MaxResults,
-
-        [Parameter(Mandatory)]
-        [string]$KBIndex
-    )
-
-    Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
-
-    $Encoded = [uri]::EscapeDataString($Query)
-    $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
-
-    Write-Debug "Encoded URI: $Uri"
-
-    $Html = Invoke-CatalogRequest -Uri $Uri
-    if (-not $Html) {
-        Write-Warning "No HTML returned from $Uri"
-        return
-    }
-
-    Write-Verbose "Extracting update IDs from HTML"
-#   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
-
-    # Look for goToDetails('GUID')
-    $pattern   = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-    $matchList = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
-    $ids = @()
-    $count = 0
-    foreach ($m in $matchList) {
-        $id = $m.Groups[1].Value
-        Write-Debug "Found update GUID: $id"
-        $ids += [PSCustomObject]@{
-            Guid    = $id
-            KBIndex = $KBIndex
-        }
-        $count++
-        if (($MaxResults -ne 0) -and ($count -ge $MaxResults)) { break }
-    }
-
-    Write-Verbose "Total IDs extracted: $($ids.Count)"
-    if ($ids.Count -ne 0) {
-        Write-Debug  ('{0,3} {1,-36} KBIndex:' -f "ID:", "Guid:")
-        for ($i = 0; $i -lt $ids.Count; $i++) {
-            Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($ids[$i].Guid), $($ids[$i].KBIndex))
-        }
-    }
-    return $ids
-}
-
-function Get-UpdateLinks {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Guid
-    )
-
-    Write-Verbose ("GUID: {0}" -f $Guid)
-
-    # Build POST body
-    $postObject = @{
-        size         = 0
-        UpdateID     = $Guid
-        UpdateIDInfo = $Guid
-    } | ConvertTo-Json -Compress
-
-    $body = @{
-        UpdateIDs = "[$postObject]"
-    }
-
-    $params = @{
-        Uri             = "https://www.catalog.update.microsoft.com/DownloadDialog.aspx"
-        Method          = 'POST'
-        Body            = $body
-        ContentType     = "application/x-www-form-urlencoded"
-        UseBasicParsing = $true
-    }
-
-    Write-Verbose "Requesting DownloadDialog.aspx via POST"
-    Write-Debug   "POST body:`n$($body.UpdateIDs)"
-
-    $response = Invoke-WebRequest @params
-
-    Write-Verbose "Received $($response.RawContentLength)-byte response of content type $($response.ContentType)"
-
-    # Normalize content for regex (remove newlines, collapse whitespace)
-    $content = $response.Content -replace "www\.download\.windowsupdate", "download.windowsupdate"
-    $content = $content -replace "`r?`n", ' '
-    $content = $content -replace '\s+', ' '
-
-    Write-Verbose "Normalized content length : $($content.Length)"
-    #Write-Debug   "Raw content (first 1000 chars):`n$($content.Substring(0, [Math]::Min(1000, $content.Length)))"
-
-    # Regex: downloadInformation[<idx>].files[<idx>].url = '<url>'
-    $pattern = "downloadInformation\[(\d+)\]\.files\[(\d+)\]\.url\s*=\s*'([^']*)'"
-    Write-Verbose "Running regex against DownloadDialog content"
-    Write-Debug   "Regex pattern: $pattern"
-
-    $matchList = [regex]::Matches(
-        $content,
-        $pattern,
-        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-    )
-
-    if ($matchList.Count -eq 0) {
-        Write-Warning "No downloadInformation URL matches for $Guid (regex returned 0 matches)"
-        return @()
-    }
-
-    Write-Verbose "Found $($matchList.Count) download link match(es)"
-
-    $links = @()
-    try {
-        foreach ($m in $matchList) {
-            $downloadInfoIndex = [int]$m.Groups[1].Value
-            $fileIndex         = [int]$m.Groups[2].Value
-            $url               = $m.Groups[3].Value
-
-            # Ignore garbage like "h" or empty strings
-            if (-not $url -or
-                [string]::IsNullOrWhiteSpace($url) -or
-                $url.Length -lt 10 -or
-                -not ($url -like "http*")) {
-
-                Write-Verbose ("Ignoring malformed URL: {0}" -f $url)
-                continue
-            }
-
-            # Try to extract KB number if present
-            $kbNumber = 0
-            if ($url -match 'kb(\d+)') {
-                $kbNumber = [int]$Matches[1]
-            }
-
-            $links += [PSCustomObject]@{
-                URL               = $url
-                KB                = $kbNumber
-                DownloadInfoIndex = $downloadInfoIndex
-                FileIndex         = $fileIndex
-            }
-        }
-    }
-    catch {
-        Write-Warning ("Error processing download links for {0}: {1}" -f $Guid, $_.Exception.Message)
-    }
-
-    # Deduplicate by URL
-    $unique = $links | Group-Object -Property URL | ForEach-Object { $_.Group[0] }
-
-    # Sort by KB descending (0s at the end)
-    $sorted = $unique | Sort-Object KB -Descending
-
-    Write-Verbose "Unique URLs after de-duplication: $($sorted.Count)"
-    foreach ($l in $sorted) {
-        Write-Debug "URL=$($l.URL) KB=$($l.KB) DI=$($l.DownloadInfoIndex) FI=$($l.FileIndex)"
-    }
-
-    return $sorted
-}
-
 # ==============================
 # Download helpers
 # ==============================
@@ -1649,242 +1367,6 @@ function Write-Manifest {
     $json | Set-Content -Path $manifestPath -Encoding UTF8
 }
 
-function Download-MUFile {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [PSCustomObject] $Update,
-
-        [Parameter(Mandatory = $true)]
-        [string] $KBIndex
-    )
-
-    Write-Host ("Preparing downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
-
-    $TargetFolder = $paths["KBs$KBIndex"]
-    Ensure-Folder $TargetFolder
-
-    $results = @()
-
-    # No URLs, then nothing to do
-    if (-not $Update.DownloadUrls -or $Update.DownloadUrls.Count -eq 0) {
-        Write-Host ("No download URLs for update {0}" -f $Update.Guid)
-        return $results
-    }
-
-    foreach ($url in $Update.DownloadUrls) {
-
-        if ([string]::IsNullOrWhiteSpace($url)) {
-            Write-Warning ("Ignoring empty URL for update {0}" -f $Update.Guid)
-            continue
-        }
-
-        $fileName = Split-Path -Path $url -Leaf
-        $destPath = Join-Path $TargetFolder $fileName
-
-        # ------------------------------------------------------------
-        # SKIP IF FILE ALREADY EXISTS
-        # ------------------------------------------------------------
-        if (Test-Path $destPath -PathType Leaf) {
-            Write-Host ("File already exists, skipping: {0}" -f $fileName)
-
-            $results += [PSCustomObject]@{
-                FileName = $fileName
-                FullPath = $destPath
-                Url      = $url
-            }
-
-            continue
-        }
-
-        Write-Host ("Downloading {0}..." -f $fileName)
-
-        # ------------------------------------------------------------
-        # Retry loop
-        # ------------------------------------------------------------
-        $success = $false
-
-        for ($attempt = 1; $attempt -le $MaxIORetries; $attempt++) {
-
-            Write-Host ("  Attempt {0} of {1}" -f $attempt, $MaxIORetries)
-
-            try {
-                $req = [System.Net.HttpWebRequest]::Create($url)
-                $req.Method = "GET"
-                $req.UserAgent = "Mozilla/5.0"
-
-                $resp = $req.GetResponse()
-                $total = $resp.ContentLength
-                $inStream  = $resp.GetResponseStream()
-                $outStream = [System.IO.File]::Open($destPath, [System.IO.FileMode]::Create)
-
-                $buffer = New-Object byte[] $BufferSize
-                $totalRead = 0
-                $nextMark = $ProgressPercentage
-
-                # Compute max widths
-                $maxBytesWidth = $total.ToString("N0").Length
-
-                # Build dynamic format string
-                $fmt = " {0,$($PercentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
-
-                # Initial progress line
-                Write-Host ($fmt -f 0, 0, $total)
-
-                while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $outStream.Write($buffer, 0, $read)
-                    $totalRead += $read
-
-                    if ($total -gt 0) {
-                        $pct = [math]::Floor(($totalRead / $total) * 100)
-
-                        if ($pct -ge $nextMark) {
-                            Write-Host ($fmt -f $pct, $totalRead, $total)
-                            $nextMark += $ProgressPrecentage
-                        }
-                    }
-                }
-                Write-Host ("  Completed: {0}" -f $fileName)
-
-                $outStream.Close()
-                $inStream.Close()
-                $resp.Close()
-
-                $success = $true
-                break
-            }
-            catch {
-                Write-Warning ("  ERROR: {0}" -f $_.Exception.Message)
-                Write-Warning ("  Retrying...")
-
-                # Clean up partial file
-                if (Test-Path $destPath) {
-                    Remove-Item $destPath -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
-
-        if (-not $success) {
-            Write-Warning ("FAILED after {0} attempts: {1}" -f $MaxIORetries, $fileName)
-            continue
-        }
-
-        $results += [PSCustomObject]@{
-            FileName = $fileName
-            FullPath = $destPath
-            Url      = $url
-        }
-    }
-
-    Write-Host ("Completed downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
-
-    return $results
-}
-
-function Get-UpdateDetails {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [int] $Count,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Guid,
-
-        [Parameter(Mandatory = $true)]
-        [string] $KBIndex
-    )
-
-    Write-Host ("Processing update #{0}: {1}" -f $Count, $Guid)
-    Write-Verbose ("KBIndex: {0}" -f $KBIndex)
-    $TargetFolder = $paths["KBs$KBIndex"]
-    Write-Verbose ("TargetFolder: {0}" -f $TargetFolder)
-
-    # ------------------------------------------------------------
-    # DETAILS PAGE (ScopedViewInline.aspx)
-    # Extracts:
-    #    - Title
-    #    - KB number
-    #    - SupersededBy list
-    # ------------------------------------------------------------
-
-    $detailsUrl = "https://www.catalog.update.microsoft.com/ScopedViewInline.aspx?updateid=$Guid"
-
-    try {
-        $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
-    }
-    catch {
-        Write-Debug ("Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
-        return [System.Management.Automation.Internal.AutomationNull]::Value
-    }
-
-    $detailsDoc = New-Object HtmlAgilityPack.HtmlDocument
-    $detailsDoc.LoadHtml($detailsResponse.Content)
-
-    # Title
-    $titleNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_titleText']")
-    $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "" }
-    Write-Verbose ("Title: {0}" -f $title)
-
-    # KB
-    $kbMatch = [regex]::Match($title, "KB\d+")
-    $kb = if ($kbMatch.Success) { $kbMatch.Value } else { "" }
-    Write-Verbose ("KB: {0}" -f $kb)
-
-    # SupersededBy
-    $supersededBy = @()
-    $supersededByPreview = @()
-    $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
-    if ($supNodes) {
-        foreach ($n in $supNodes) {
-            $supersededByKB = $n.InnerText.Trim()
-            if ($supersededByKB -imatch 'preview') {
-                $supersededByPreview += $supersededByKB
-            } else {
-                $supersededBy += $supersededByKB
-            }
-        }
-    }
-    Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
-    Write-Verbose ("SupersededByPreview: {0}" -f ($supersededByPreview -join ', '))
-
-    # Not a keeper if superseded by anything else, even if it has download links
-    if ($supersededBy.Count -gt 0) {
-        Write-Host ("{0} superseded" -f $Guid)
-        return [System.Management.Automation.Internal.AutomationNull]::Value
-    }
-
-    # ------------------------------------------------------------
-    # DOWNLOAD LINKS (via Get-UpdateLinks)
-    # ------------------------------------------------------------
-
-    Write-Host "Finding download links for $title"
-
-    # Need to use () and crazy ForEach-Object to see the Write-xxxx output
-    $links = (Get-UpdateLinks -Guid $Guid | ForEach-Object { $_ })
-    $downloadUrls = @()
-    if ($links) {
-        $downloadUrls = $links.URL | Select-Object -Unique
-    }
-
-    Write-Host ("Found {0} file(s) for this update" -f $downloadUrls.Count)
-
-    # Not a keeper if no download links
-    if ($downloadUrls.Count -eq 0) {
-        Write-Host ("{0} has no download links" -f $Guid)
-        return [System.Management.Automation.Internal.AutomationNull]::Value
-    }
-    Write-Verbose ("Download URLs: {0}" -f ($downloadUrls -join ', '))
-
-    return [PSCustomObject]@{
-        Guid         = $Guid
-        Title        = $title
-        KB           = $kb
-        SupersededBy = $supersededBy
-        DownloadUrls = $downloadUrls
-        KBIndex      = $KBIndex
-    }
-}
-
 function Build-ManifestEntry {
     [CmdletBinding()]
     param(
@@ -1906,6 +1388,524 @@ function Build-ManifestEntry {
 
 function Invoke-KBWork {
 
+    # =========================
+    # HTML-based Update Catalog search
+    # =========================
+
+    <# Copilot's HTMHtmlAgilityPack.HtmlDocument free suggestions
+
+    1. Make Invoke-CatalogRequest return raw HTML (string)
+    $Response = Invoke-WebRequest @Params
+
+    Write-Debug "RawContent length = $($Response.RawContent.Length)"
+
+    $content = $Response.Content
+    Write-Debug "Content length = $($content.Length)"
+    return $content
+
+
+    2. Update Search-UpdateCatalogHtml to use the raw HTML string
+    $html = Invoke-CatalogRequest -Uri $Uri
+    if (-not $html) {
+        Write-Warning "No HTML returned from $Uri"
+        return
+    }
+
+    Write-Verbose "Extracting update IDs from HTML"
+
+    $pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
+    $matches = [regex]::Matches($html, $pattern)
+
+    3. Add a helper: Get-CatalogSupersededBy (tight, aligned to your HTML)
+    function Get-CatalogSupersededBy {
+        param([string]$Html)
+
+        $section = ($Html -split 'id="supersededbyInfo"')[1]
+        if (-not $section) { return @() }
+
+        $pattern = '<a[^>]*>([^<]+)</a>'
+
+        $matches = [regex]::Matches(
+            $section,
+            $pattern,
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+
+        return $matches |
+            ForEach-Object { $_.Groups[1].Value.Trim() } |
+            Where-Object { $_ -ne "" }
+    }
+
+    4. Convert Get-UpdateDetails to pure regex (no HtmlAgilityPack)
+    $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
+    $html = $detailsResponse.Content
+
+    # Title
+    $title = ""
+    $titleMatch = [regex]::Match(
+        $html,
+        '<span[^>]*id="ScopedViewHandler_titleText"[^>]*>(.*?)</span>',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    if ($titleMatch.Success) {
+        $title = $titleMatch.Groups[1].Value.Trim()
+    }
+    Write-Verbose ("Title: {0}" -f $title)
+
+    # KB
+    $kb = ""
+    $kbMatch = [regex]::Match($title, "KB\d+")
+    if ($kbMatch.Success) { $kb = $kbMatch.Value }
+    Write-Verbose ("KB: {0}" -f $kb)
+
+    # SupersededBy
+    $supersededBy = Get-CatalogSupersededBy $html
+
+    #>
+
+    function Invoke-CatalogRequest {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Uri
+        )
+
+        Write-Verbose "GET $Uri"
+
+        try {
+            $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+            $Headers = @{
+                "Cache-Control" = "no-cache"
+                "Pragma"        = "no-cache"
+                "User-Agent"    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+
+            $Params = @{
+                Uri             = $Uri
+                Headers         = $Headers
+                UseBasicParsing = $true
+                ErrorAction     = "Stop"
+            }
+
+            $Response = Invoke-WebRequest @Params
+
+            Write-Debug "RawContent length = $($Response.RawContent.Length)"
+
+            $HtmlDoc = [HtmlAgilityPack.HtmlDocument]::new()
+            $HtmlDoc.LoadHtml($Response.RawContent.ToString())
+
+            return $HtmlDoc
+        }
+        catch {
+            Write-Warning "Failed: $_"
+            return $null
+        }
+        finally {
+            [Net.ServicePointManager]::SecurityProtocol = $oldProtocol
+        }
+    }
+
+    function Search-UpdateCatalogHtml {
+        param(
+            [Parameter(Mandatory)]
+            [string]$Query,
+
+            [Parameter(Mandatory)]
+            [int]$MaxResults,
+
+            [Parameter(Mandatory)]
+            [string]$KBIndex
+        )
+
+        Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
+
+        $Encoded = [uri]::EscapeDataString($Query)
+        $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
+
+        Write-Debug "Encoded URI: $Uri"
+
+        $Html = Invoke-CatalogRequest -Uri $Uri
+        if (-not $Html) {
+            Write-Warning "No HTML returned from $Uri"
+            return
+        }
+
+        Write-Verbose "Extracting update IDs from HTML"
+    #   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
+
+        # Look for goToDetails('GUID')
+        $pattern   = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
+        $matchList = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
+        $ids = @()
+        $count = 0
+        foreach ($m in $matchList) {
+            $id = $m.Groups[1].Value
+            Write-Debug "Found update GUID: $id"
+            $ids += [PSCustomObject]@{
+                Guid    = $id
+                KBIndex = $KBIndex
+            }
+            $count++
+            if (($MaxResults -ne 0) -and ($count -ge $MaxResults)) { break }
+        }
+
+        Write-Verbose "Total IDs extracted: $($ids.Count)"
+        if ($ids.Count -ne 0) {
+            Write-Debug  ('{0,3} {1,-36} KBIndex:' -f "ID:", "Guid:")
+            for ($i = 0; $i -lt $ids.Count; $i++) {
+                Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($ids[$i].Guid), $($ids[$i].KBIndex))
+            }
+        }
+        return $ids
+    }
+
+    function Get-UpdateLinks {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string] $Guid
+        )
+
+        Write-Verbose ("GUID: {0}" -f $Guid)
+
+        # Build POST body
+        $postObject = @{
+            size         = 0
+            UpdateID     = $Guid
+            UpdateIDInfo = $Guid
+        } | ConvertTo-Json -Compress
+
+        $body = @{
+            UpdateIDs = "[$postObject]"
+        }
+
+        $params = @{
+            Uri             = "https://www.catalog.update.microsoft.com/DownloadDialog.aspx"
+            Method          = 'POST'
+            Body            = $body
+            ContentType     = "application/x-www-form-urlencoded"
+            UseBasicParsing = $true
+        }
+
+        Write-Verbose "Requesting DownloadDialog.aspx via POST"
+        Write-Debug   "POST body:`n$($body.UpdateIDs)"
+
+        $response = Invoke-WebRequest @params
+
+        Write-Verbose "Received $($response.RawContentLength)-byte response of content type $($response.ContentType)"
+
+        # Normalize content for regex (remove newlines, collapse whitespace)
+        $content = $response.Content -replace "www\.download\.windowsupdate", "download.windowsupdate"
+        $content = $content -replace "`r?`n", ' '
+        $content = $content -replace '\s+', ' '
+
+        Write-Verbose "Normalized content length : $($content.Length)"
+        Write-Debug   "Raw content (first 1000 chars):`n$($content.Substring(0, [Math]::Min(1000, $content.Length)))"
+
+        # Regex: downloadInformation[<idx>].files[<idx>].url = '<url>'
+        $pattern = "downloadInformation\[(\d+)\]\.files\[(\d+)\]\.url\s*=\s*'([^']*)'"
+        Write-Verbose "Running regex against DownloadDialog content"
+        Write-Debug   "Regex pattern: $pattern"
+
+        $matchList = [regex]::Matches(
+            $content,
+            $pattern,
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+
+        if ($matchList.Count -eq 0) {
+            Write-Warning "No downloadInformation URL matches for $Guid (regex returned 0 matches)"
+            return @()
+        }
+
+        Write-Verbose "Found $($matchList.Count) download link match(es)"
+
+        $links = @()
+        try {
+            foreach ($m in $matchList) {
+                $downloadInfoIndex = [int]$m.Groups[1].Value
+                $fileIndex         = [int]$m.Groups[2].Value
+                $url               = $m.Groups[3].Value
+
+                # Ignore garbage like "h" or empty strings
+                if (-not $url -or
+                    [string]::IsNullOrWhiteSpace($url) -or
+                    $url.Length -lt 10 -or
+                    -not ($url -like "http*")) {
+
+                    Write-Verbose ("Ignoring malformed URL: {0}" -f $url)
+                    continue
+                }
+
+                # Try to extract KB number if present
+                $kbNumber = 0
+                if ($url -match 'kb(\d+)') {
+                    $kbNumber = [int]$Matches[1]
+                }
+
+                $links += [PSCustomObject]@{
+                    URL               = $url
+                    KB                = $kbNumber
+                    DownloadInfoIndex = $downloadInfoIndex
+                    FileIndex         = $fileIndex
+                }
+            }
+        }
+        catch {
+            Write-Warning ("Error processing download links for {0}: {1}" -f $Guid, $_.Exception.Message)
+        }
+
+        # Deduplicate by URL
+        $unique = $links | Group-Object -Property URL | ForEach-Object { $_.Group[0] }
+
+        # Sort by KB descending (0s at the end)
+        $sorted = $unique | Sort-Object KB -Descending
+
+        Write-Verbose "Unique URLs after de-duplication: $($sorted.Count)"
+        foreach ($l in $sorted) {
+            Write-Debug "URL=$($l.URL) KB=$($l.KB) DI=$($l.DownloadInfoIndex) FI=$($l.FileIndex)"
+        }
+
+        return $sorted
+    }
+
+    function Download-MUFile {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [PSCustomObject] $Update,
+    
+            [Parameter(Mandatory = $true)]
+            [string] $KBIndex
+        )
+    
+        Write-Host ("Preparing downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
+    
+        $TargetFolder = $paths["KBs$KBIndex"]
+        Ensure-Folder $TargetFolder
+    
+        $results = @()
+    
+        # No URLs, then nothing to do
+        if (-not $Update.DownloadUrls -or $Update.DownloadUrls.Count -eq 0) {
+            Write-Host ("No download URLs for update {0}" -f $Update.Guid)
+            return $results
+        }
+    
+        foreach ($url in $Update.DownloadUrls) {
+    
+            if ([string]::IsNullOrWhiteSpace($url)) {
+                Write-Warning ("Ignoring empty URL for update {0}" -f $Update.Guid)
+                continue
+            }
+    
+            $fileName = Split-Path -Path $url -Leaf
+            $destPath = Join-Path $TargetFolder $fileName
+    
+            # ------------------------------------------------------------
+            # SKIP IF FILE ALREADY EXISTS
+            # ------------------------------------------------------------
+            if (Test-Path $destPath -PathType Leaf) {
+                Write-Host ("File already exists, skipping: {0}" -f $fileName)
+    
+                $results += [PSCustomObject]@{
+                    FileName = $fileName
+                    FullPath = $destPath
+                    Url      = $url
+                }
+    
+                continue
+            }
+    
+            Write-Host ("Downloading {0}..." -f $fileName)
+    
+            # ------------------------------------------------------------
+            # Retry loop
+            # ------------------------------------------------------------
+            $success = $false
+    
+            for ($attempt = 1; $attempt -le $MaxIORetries; $attempt++) {
+    
+                Write-Host ("  Attempt {0} of {1}" -f $attempt, $MaxIORetries)
+    
+                try {
+                    $req = [System.Net.HttpWebRequest]::Create($url)
+                    $req.Method = "GET"
+                    $req.UserAgent = "Mozilla/5.0"
+    
+                    $resp = $req.GetResponse()
+                    $total = $resp.ContentLength
+                    $inStream  = $resp.GetResponseStream()
+                    $outStream = [System.IO.File]::Open($destPath, [System.IO.FileMode]::Create)
+    
+                    $buffer = New-Object byte[] $BufferSize
+                    $totalRead = 0
+                    $nextMark = $ProgressPercentage
+    
+                    # Compute max widths
+                    $maxBytesWidth = $total.ToString("N0").Length
+    
+                    # Build dynamic format string
+                    $fmt = " {0,$($PercentWidth)}%  {1,$($maxBytesWidth):N0}/{2:N0} bytes"
+    
+                    # Initial progress line
+                    Write-Host ($fmt -f 0, 0, $total)
+    
+                    while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $outStream.Write($buffer, 0, $read)
+                        $totalRead += $read
+    
+                        if ($total -gt 0) {
+                            $pct = [math]::Floor(($totalRead / $total) * 100)
+    
+                            if ($pct -ge $nextMark) {
+                                Write-Host ($fmt -f $pct, $totalRead, $total)
+                                $nextMark += $ProgressPrecentage
+                            }
+                        }
+                    }
+                    Write-Host ("  Completed: {0}" -f $fileName)
+    
+                    $outStream.Close()
+                    $inStream.Close()
+                    $resp.Close()
+    
+                    $success = $true
+                    break
+                }
+                catch {
+                    Write-Warning ("  ERROR: {0}" -f $_.Exception.Message)
+                    Write-Warning ("  Retrying...")
+    
+                    # Clean up partial file
+                    if (Test-Path $destPath) {
+                        Remove-Item $destPath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+    
+            if (-not $success) {
+                Write-Warning ("FAILED after {0} attempts: {1}" -f $MaxIORetries, $fileName)
+                continue
+            }
+    
+            $results += [PSCustomObject]@{
+                FileName = $fileName
+                FullPath = $destPath
+                Url      = $url
+            }
+        }
+    
+        Write-Host ("Completed downloads for update {0}: {1}" -f $Update.Guid, $Update.Title)
+    
+        return $results
+    }
+    
+    function Get-UpdateDetails {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [int] $Count,
+    
+            [Parameter(Mandatory = $true)]
+            [string] $Guid,
+    
+            [Parameter(Mandatory = $true)]
+            [string] $KBIndex
+        )
+    
+        Write-Host ("Processing update #{0}: {1}" -f $Count, $Guid)
+        Write-Verbose ("KBIndex: {0}" -f $KBIndex)
+        $TargetFolder = $paths["KBs$KBIndex"]
+        Write-Verbose ("TargetFolder: {0}" -f $TargetFolder)
+    
+        # ------------------------------------------------------------
+        # DETAILS PAGE (ScopedViewInline.aspx)
+        # Extracts:
+        #    - Title
+        #    - KB number
+        #    - SupersededBy list
+        # ------------------------------------------------------------
+    
+        $detailsUrl = "https://www.catalog.update.microsoft.com/ScopedViewInline.aspx?updateid=$Guid"
+    
+        try {
+            $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
+        }
+        catch {
+            Write-Debug ("Failed to fetch details page for {0}: {1}" -f $Guid, $_.Exception.Message)
+            return [System.Management.Automation.Internal.AutomationNull]::Value
+        }
+    
+        $detailsDoc = New-Object HtmlAgilityPack.HtmlDocument
+        $detailsDoc.LoadHtml($detailsResponse.Content)
+    
+        # Title
+        $titleNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_titleText']")
+        $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "" }
+        Write-Verbose ("Title: {0}" -f $title)
+    
+        # KB
+        $kbMatch = [regex]::Match($title, "KB\d+")
+        $kb = if ($kbMatch.Success) { $kbMatch.Value } else { "" }
+        Write-Verbose ("KB: {0}" -f $kb)
+    
+        # SupersededBy
+        $supersededBy = @()
+        $supersededByPreview = @()
+        $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
+        if ($supNodes) {
+            foreach ($n in $supNodes) {
+                $supersededByKB = $n.InnerText.Trim()
+                if ($supersededByKB -imatch 'preview') {
+                    $supersededByPreview += $supersededByKB
+                } else {
+                    $supersededBy += $supersededByKB
+                }
+            }
+        }
+        Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
+        Write-Verbose ("SupersededByPreview: {0}" -f ($supersededByPreview -join ', '))
+    
+        # Not a keeper if superseded by anything else, even if it has download links
+        if ($supersededBy.Count -gt 0) {
+            Write-Host ("{0} superseded" -f $Guid)
+            return [System.Management.Automation.Internal.AutomationNull]::Value
+        }
+    
+        # ------------------------------------------------------------
+        # DOWNLOAD LINKS (via Get-UpdateLinks)
+        # ------------------------------------------------------------
+    
+        Write-Host "Finding download links for $title"
+    
+        # Need to use () and crazy ForEach-Object to see the Write-xxxx output
+        $links = (Get-UpdateLinks -Guid $Guid | ForEach-Object { $_ })
+        $downloadUrls = @()
+        if ($links) {
+            $downloadUrls = $links.URL | Select-Object -Unique
+        }
+    
+        Write-Host ("Found {0} file(s) for this update" -f $downloadUrls.Count)
+    
+        # Not a keeper if no download links
+        if ($downloadUrls.Count -eq 0) {
+            Write-Host ("{0} has no download links" -f $Guid)
+            return [System.Management.Automation.Internal.AutomationNull]::Value
+        }
+        Write-Verbose ("Download URLs: {0}" -f ($downloadUrls -join ', '))
+    
+        return [PSCustomObject]@{
+            Guid         = $Guid
+            Title        = $title
+            KB           = $kb
+            SupersededBy = $supersededBy
+            DownloadUrls = $downloadUrls
+            KBIndex      = $KBIndex
+        }
+    }
+    
     if ($Clean) {
         Clean-Folder $paths.KBsRoot
         return
