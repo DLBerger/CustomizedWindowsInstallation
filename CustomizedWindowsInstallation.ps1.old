@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "29aabb3"
+$GitHash = "04f1b7a"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -197,7 +197,7 @@ $InstallIndices = @()
 $MetaSrc = 'To be determined at extract time'
 
 # Leadin to get ':' to line up in output. Write-xxxx (&$LeadIn "dism" "$dismExe")
-$LeadIn = { param($Label, $Value) '{0,-20}: {1}' -f $Label, $Value }
+$LeadIn = { param($Label, $Value) '{0,-21}: {1}' -f $Label, $Value }
 
 # Time sentinels for date comparisons
 $NoTime      = [datetime]"1900-01-01" # Use for "File exists, but date is missing/empty"
@@ -215,10 +215,15 @@ $PercentWidth       = 3  # Always 0–100
 $Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes)
             $(if   ($CopiedBytes -eq 0) { -1 }
               else                      { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / $ProgressPrecentage) * $ProgressPrecentage })
-         }
+          }
 
 # Hex converter to string.  Write-xxxx ($(& $Hex $rc))
 $Hex = { param([int]$Code) ('0x{0:X8}' -f ($Code -band 0xFFFFFFFF)) }
+
+# Only output the HTML content for debugging these many times
+$htmlContentOutput        = 1
+$rawContentOutput         = 1
+$detailsHtmlContentOutput = 100
 
 # Final compression type
 $DismCompression = 'max' # none, fast, max
@@ -1106,9 +1111,9 @@ function Validate-ExtractISO {
     
     # Resolve ISO and DestISO paths
     $script:ISO = Resolve-FullPath $ISO
-    Write-Verbose ("Resolved ISO path: $ISO")
+    Write-Verbose (&$LeadIn "Resolved ISO path" "$ISO")
     $script:DestISO = Resolve-FullPath $DestISO
-    Write-Verbose ("Resolved DestISO path: $DestISO")
+    Write-Verbose (&$LeadIn "Resolved DestISO path" "$DestISO")
 
     if ($All -and $Clean) {
         Clean-Folder $paths.SrcIsoRoot
@@ -1388,114 +1393,31 @@ function Build-ManifestEntry {
 
 function Invoke-KBWork {
 
-    # =========================
-    # HTML-based Update Catalog search
-    # =========================
-
-    <# Copilot's HTMHtmlAgilityPack.HtmlDocument free suggestions
-
-    1. Make Invoke-CatalogRequest return raw HTML (string)
-    $Response = Invoke-WebRequest @Params
-
-    Write-Debug "RawContent length = $($Response.RawContent.Length)"
-
-    $content = $Response.Content
-    Write-Debug "Content length = $($content.Length)"
-    return $content
-
-
-    2. Update Search-UpdateCatalogHtml to use the raw HTML string
-    $html = Invoke-CatalogRequest -Uri $Uri
-    if (-not $html) {
-        Write-Warning "No HTML returned from $Uri"
-        return
-    }
-
-    Write-Verbose "Extracting update IDs from HTML"
-
-    $pattern = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-    $matches = [regex]::Matches($html, $pattern)
-
-    3. Add a helper: Get-CatalogSupersededBy (tight, aligned to your HTML)
-    function Get-CatalogSupersededBy {
-        param([string]$Html)
-
-        $section = ($Html -split 'id="supersededbyInfo"')[1]
-        if (-not $section) { return @() }
-
-        $pattern = '<a[^>]*>([^<]+)</a>'
-
-        $matches = [regex]::Matches(
-            $section,
-            $pattern,
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
-
-        return $matches |
-            ForEach-Object { $_.Groups[1].Value.Trim() } |
-            Where-Object { $_ -ne "" }
-    }
-
-    4. Convert Get-UpdateDetails to pure regex (no HtmlAgilityPack)
-    $detailsResponse = Invoke-WebRequest -Uri $detailsUrl -UseBasicParsing -ErrorAction Stop
-    $html = $detailsResponse.Content
-
-    # Title
-    $title = ""
-    $titleMatch = [regex]::Match(
-        $html,
-        '<span[^>]*id="ScopedViewHandler_titleText"[^>]*>(.*?)</span>',
-        [System.Text.RegularExpressions.RegexOptions]::Singleline
-    )
-    if ($titleMatch.Success) {
-        $title = $titleMatch.Groups[1].Value.Trim()
-    }
-    Write-Verbose ("Title: {0}" -f $title)
-
-    # KB
-    $kb = ""
-    $kbMatch = [regex]::Match($title, "KB\d+")
-    if ($kbMatch.Success) { $kb = $kbMatch.Value }
-    Write-Verbose ("KB: {0}" -f $kb)
-
-    # SupersededBy
-    $supersededBy = Get-CatalogSupersededBy $html
-
-    #>
-
     function Invoke-CatalogRequest {
         param(
             [Parameter(Mandatory)]
             [string]$Uri
         )
-
         Write-Verbose "GET $Uri"
-
         try {
             $oldProtocol = [Net.ServicePointManager]::SecurityProtocol
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
             $Headers = @{
                 "Cache-Control" = "no-cache"
                 "Pragma"        = "no-cache"
                 "User-Agent"    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
-
             $Params = @{
                 Uri             = $Uri
                 Headers         = $Headers
                 UseBasicParsing = $true
                 ErrorAction     = "Stop"
             }
-
             $Response = Invoke-WebRequest @Params
-
-            Write-Debug "RawContent length = $($Response.RawContent.Length)"
-
-            $HtmlDoc = [HtmlAgilityPack.HtmlDocument]::new()
-            $HtmlDoc.LoadHtml($Response.RawContent.ToString())
-
-            return $HtmlDoc
+            Write-Debug "Content length = $($Response.Content.Length)"
+            
+            # Return pure text string content to bypass all DOM engines
+            return $Response.Content
         }
         catch {
             Write-Warning "Failed: $_"
@@ -1510,54 +1432,127 @@ function Invoke-KBWork {
         param(
             [Parameter(Mandatory)]
             [string]$Query,
-
             [Parameter(Mandatory)]
             [int]$MaxResults,
-
             [Parameter(Mandatory)]
             [string]$KBIndex
         )
-
         Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
-
         $Encoded = [uri]::EscapeDataString($Query)
         $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
-
         Write-Debug "Encoded URI: $Uri"
 
-        $Html = Invoke-CatalogRequest -Uri $Uri
-        if (-not $Html) {
-            Write-Warning "No HTML returned from $Uri"
-            return
+        # Fetch the raw HTML string
+        $htmlContent = Invoke-CatalogRequest -Uri $Uri
+        if ([string]::IsNullOrEmpty($htmlContent)) {
+            Write-Warning "No HTML string content returned from $Uri"
+            return @()
+        }
+        
+        # Only output the HTML content for debugging a finite number of times
+        if ($script:htmlContentOutput -gt 0) {
+            Write-Debug "HTML Content:`n$htmlContent"
+            $script:htmlContentOutput--
         }
 
-        Write-Verbose "Extracting update IDs from HTML"
-    #   Write-Debug "HTML: $($Html.DocumentNode.InnerHtml)"
+        Write-Verbose "Extracting update fields natively from HTML string via Regular Expressions"
 
-        # Look for goToDetails('GUID')
-        $pattern   = 'goToDetails\("([0-9A-Fa-f\-]{36})"\)'
-        $matchList = [regex]::Matches($Html.DocumentNode.InnerHtml, $pattern)
-        $ids = @()
-        $count = 0
-        foreach ($m in $matchList) {
-            $id = $m.Groups[1].Value
-            Write-Debug "Found update GUID: $id"
-            $ids += [PSCustomObject]@{
-                Guid    = $id
-                KBIndex = $KBIndex
+        # Support single or double quotes around the table ID attribute
+        if ($htmlContent -match '<table[^>]*id=[''"]ctl00_catalogBody_updateMatches[''"][^>]*>([\s\S]*?)</table>') {
+            $tableHtml = $Matches[1]
+        } else {
+            Write-Verbose "No updates layout table container matched inside the page source."
+            return @()
+        }
+
+        # Extract all rows from the table body content
+        $rowPattern = '<tr[^>]*>([\s\S]*?)</tr>'
+        $rowMatches = [regex]::Matches($tableHtml, $rowPattern)
+        $extractedUpdates = @()
+
+        foreach ($rowMatch in $rowMatches) {
+            if ($MaxResults -gt 0 -and $extractedUpdates.Count -ge $MaxResults) {
+                break
             }
-            $count++
-            if (($MaxResults -ne 0) -and ($count -ge $MaxResults)) { break }
-        }
 
-        Write-Verbose "Total IDs extracted: $($ids.Count)"
-        if ($ids.Count -ne 0) {
-            Write-Debug  ('{0,3} {1,-36} KBIndex:' -f "ID:", "Guid:")
-            for ($i = 0; $i -lt $ids.Count; $i++) {
-                Write-Debug ('{0,3} {1,-36} {2}' -f $($i + 1), $($ids[$i].Guid), $($ids[$i].KBIndex))
+            $rowHtml = $rowMatch.Groups[1].Value
+
+            # Skip header rows or rows missing a GUID details trigger
+            if ($rowHtml -notmatch 'goToDetails\([''"]([a-f0-9\-]{36})[''"]\)') {
+                continue
+            }
+            $updateGuid = $Matches[1]
+
+            # Extract table cell structures inside this specific row
+            $cellMatches = [regex]::Matches($rowHtml, '<td[^>]*>([\s\S]*?)</td>')
+            if ($cellMatches.Count -lt 7) {
+                continue
+            }
+
+            # Helper to clean out HTML tags, space placeholders, and trailing whitespaces
+            $GetCleanText = {
+                param([string]$rawCell)
+                $clean = [regex]::Replace($rawCell, '<[^>]+>', '').Replace('&nbsp;', ' ').Trim()
+                return [System.Net.WebUtility]::HtmlDecode($clean)
+            }
+
+            # Extract properties
+            $title          = &$GetCleanText $cellMatches[1].Groups[1].Value
+            $products       = &$GetCleanText $cellMatches[2].Groups[1].Value
+            $classification = &$GetCleanText $cellMatches[3].Groups[1].Value
+            $lastUpdated    = &$GetCleanText $cellMatches[4].Groups[1].Value
+            $version        = &$GetCleanText $cellMatches[5].Groups[1].Value
+            
+            # Get raw cell data directly containing human readable size and the exact trailing byte digits
+            $rawSizeText    = &$GetCleanText $cellMatches[6].Groups[1].Value
+
+            # --- CRITICAL FILTER: Skip if the update entry itself is a Preview release ---
+            if ($title -imatch 'preview') {
+                Write-Verbose "Skipping update search entry (Preview matched in title): $title"
+                continue
+            }
+
+            # Extractions of the exact trailing bytes sequence (skips text & tracking spaces)
+            $sizeInBytes = [long]0
+            if ($rawSizeText -match '[\d\.,]+\s*(?:KB|MB|GB|Bytes|B)\s+(\d+)') {
+                $sizeInBytes = [long]$Matches[1]
+            }
+            else {
+                # Fallback block: strips out non-digits if layout spacing varies slightly
+                $fallbackDigits = [regex]::Replace($rawSizeText, '\D', '')
+                if (-not [string]::IsNullOrEmpty($fallbackDigits)) {
+                    $sizeInBytes = [long]$fallbackDigits
+                }
+            }
+
+            # Construct the PSCustomObject matching the script's pipeline expectation downstream
+            $extractedUpdates += [PSCustomObject]@{
+                Guid           = $updateGuid
+                KBIndex        = $KBIndex
+                Title          = $title
+                Products       = $products
+                Classification = $classification
+                LastUpdated    = $lastUpdated
+                Version        = $version
+                Size           = $sizeInBytes
             }
         }
-        return $ids
+
+        Write-Verbose "Total IDs extracted: $($extractedUpdates.Count)"
+        if ($extractedUpdates.Count -ne 0) {
+            for ($i = 0; $i -lt $extractedUpdates.Count; $i++) {
+                Write-Debug (&$Leadin $($i + 1) "")
+                Write-Debug (&$Leadin "  GUID" $extractedUpdates[$i].Guid)
+                Write-Debug (&$Leadin "  KBIndex" $extractedUpdates[$i].KBIndex)
+                Write-Debug (&$Leadin "  Title" $extractedUpdates[$i].Title)
+                Write-Debug (&$Leadin "  Products" $extractedUpdates[$i].Products)
+                Write-Debug (&$Leadin "  Classification" $extractedUpdates[$i].Classification)
+                Write-Debug (&$Leadin "  Last Updated" $extractedUpdates[$i].LastUpdated)
+                Write-Debug (&$Leadin "  Version" $extractedUpdates[$i].Version)
+                Write-Debug (&$Leadin "  Size" $extractedUpdates[$i].Size)
+            }
+        }
+        return $extractedUpdates
     }
 
     function Get-UpdateLinks {
@@ -1601,7 +1596,11 @@ function Invoke-KBWork {
         $content = $content -replace '\s+', ' '
 
         Write-Verbose "Normalized content length : $($content.Length)"
-        Write-Debug   "Raw content (first 1000 chars):`n$($content.Substring(0, [Math]::Min(1000, $content.Length)))"
+        # Only output the raw content for debugging a finite number of times
+        if ($script:rawContentOutput -gt 0) {
+            Write-Debug "Raw content:`n$($content)"
+            $script:rawContentOutput--
+        }
 
         # Regex: downloadInformation[<idx>].files[<idx>].url = '<url>'
         $pattern = "downloadInformation\[(\d+)\]\.files\[(\d+)\]\.url\s*=\s*'([^']*)'"
@@ -1838,14 +1837,27 @@ function Invoke-KBWork {
             return [System.Management.Automation.Internal.AutomationNull]::Value
         }
     
-        $detailsDoc = New-Object HtmlAgilityPack.HtmlDocument
-        $detailsDoc.LoadHtml($detailsResponse.Content)
-    
-        # Title
-        $titleNode = $detailsDoc.DocumentNode.SelectSingleNode("//span[@id='ScopedViewHandler_titleText']")
-        $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "" }
+        $htmlContent = $detailsResponse.Content
+        
+        # Only output the HTML content for debugging a finite number of times
+        if ($script:detailsHtmlContentOutput -gt 0) {
+            Write-Debug "Details HTML Content:`n$htmlContent"
+            $script:detailsHtmlContentOutput--
+        }
+
+        # Title Extraction via Regex
+        $title = ""
+        if ($htmlContent -match '<span[^>]*id=[''"]ScopedViewHandler_titleText[''"][^>]*>([\s\S]*?)</span>') {
+            $title = [System.Net.WebUtility]::HtmlDecode($Matches[1].Trim())
+        }
         Write-Verbose ("Title: {0}" -f $title)
     
+        # --- SAFEGUARD: Explicitly filter preview updates discovered during deep inspection ---
+        if ($title -imatch 'preview') {
+            Write-Host ("{0} skipped (Preview update title found in details)" -f $Guid)
+            return [System.Management.Automation.Internal.AutomationNull]::Value
+        }
+
         # KB
         $kbMatch = [regex]::Match($title, "KB\d+")
         $kb = if ($kbMatch.Success) { $kbMatch.Value } else { "" }
@@ -1854,10 +1866,23 @@ function Invoke-KBWork {
         # SupersededBy
         $supersededBy = @()
         $supersededByPreview = @()
-        $supNodes = $detailsDoc.DocumentNode.SelectNodes("//div[@id='supersededbyInfo']//a")
-        if ($supNodes) {
-            foreach ($n in $supNodes) {
-                $supersededByKB = $n.InnerText.Trim()
+        
+        # Capture everything following the target div open tag up until the next structural block container boundary.
+        # This guarantees full multi-line coverage without missing subsequent links or choking on variable-length lookbehinds.
+        if ($htmlContent -match '<div[^>]*id=[''"]supersededbyInfo[''"][^>]*>([\s\S]*?)(?=<div[^>]*id=|</body>|</html>)') {
+            $supersededBlock = $Matches[1]
+            
+            # Extract all anchor link elements populated inside the block
+            $linkMatches = [regex]::Matches($supersededBlock, '<a[^>]*>([\s\S]*?)</a>')
+            foreach ($linkMatch in $linkMatches) {
+                # Strip out inner structural markup formatting safely
+                $rawLinkText = [regex]::Replace($linkMatch.Groups[1].Value, '<[^>]+>', '').Replace('&nbsp;', ' ').Trim()
+                $supersededByKB = [System.Net.WebUtility]::HtmlDecode($rawLinkText)
+                
+                if ([string]::IsNullOrEmpty($supersededByKB)) {
+                    continue
+                }
+                
                 if ($supersededByKB -imatch 'preview') {
                     $supersededByPreview += $supersededByKB
                 } else {
@@ -1865,6 +1890,7 @@ function Invoke-KBWork {
                 }
             }
         }
+        
         Write-Verbose ("SupersededBy: {0}" -f ($supersededBy -join ', '))
         Write-Verbose ("SupersededByPreview: {0}" -f ($supersededByPreview -join ', '))
     
@@ -1905,7 +1931,7 @@ function Invoke-KBWork {
             KBIndex      = $KBIndex
         }
     }
-    
+
     if ($Clean) {
         Clean-Folder $paths.KBsRoot
         return
@@ -1979,6 +2005,7 @@ function Invoke-KBWork {
         }
     )
 
+    # Pull down each query and return the results
     $results = @()
     foreach ($q in $queries) {
         $results += Search-UpdateCatalogHtml -Query $q.Query -MaxResults $q.MaxResults -KBIndex $q.KBIndex
@@ -3229,78 +3256,6 @@ Write-Host (&$LeadIn "Selected indices" "$(if ($InstallIndices.Count -gt 0) { $I
 Write-Host (&$LeadIn "Mode" "$($workSwitches -join ', ')")
 if ($Clean)  { Write-Host (&$LeadIn "Clean mode" "Enabled") }
 if ($DryRun) { Write-Host (&$LeadIn "Dry-run mode" "Enabled") }
-
-if ($KB) { # Only KB workflow needs HTML parsing, so we delay this until now
-    # --- HtmlAgilityPack bootstrap (PS 5.x SAFE) ---------------------------------
-    $HtmlAgilityPackDll = 'HtmlAgilityPack.dll'
-    $hapDll = Join-Path $Folder $HtmlAgilityPackDll
-
-    if ($Clean) {
-        Clean-File $hapDll
-    }
-    elseif ($DryRun) {
-        if (-not (Test-Path $hapDll)) {
-            Write-Host "[DryRun] Would download: $HtmlAgilityPackDll"
-        }   
-    } else {
-        if (-not (Test-Path $hapDll)) {
-            Write-Host "HtmlAgilityPack.dll not found - downloading..."
-
-            $nugetUrl   = "https://www.nuget.org/api/v2/package/HtmlAgilityPack"
-            $tmpNupkg   = Join-Path $PSScriptRoot "HtmlAgilityPack.nupkg"
-            $extractDir = Join-Path $PSScriptRoot "HtmlAgilityPack_Extract"
-
-            # Clean old extraction folder if it exists
-            Remove-Folder $extractDir
-
-            # --- Download using .NET WebClient (PS 5.x safe) ---
-            Write-Verbose "Downloading via WebClient..."
-            $wc = New-Object System.Net.WebClient
-            $wc.DownloadFile($nugetUrl, $tmpNupkg)
-
-            # --- Extract using .NET ZipFile (PS 5.x safe) ---
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [System.IO.Compression.ZipFile]::ExtractToDirectory($tmpNupkg, $extractDir)
-
-            # Prefer netstandard2.0, fallback to net45
-            $candidatePaths = @(
-                (Join-Path $extractDir "lib\netstandard2.0\$HtmlAgilityPackDll"),
-                (Join-Path $extractDir "lib\net45\$HtmlAgilityPackDll")
-            )
-
-            $sourceDll = $candidatePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-            if (-not $sourceDll) {
-                Write-Host "ERROR: $HtmlAgilityPackDll not found inside the downloaded NuGet package, KB downloads will not work"
-                return
-            }
-
-            Copy-Item -Path $sourceDll -Destination $hapDll -Force
-            Write-Verbose "$HtmlAgilityPackDll copied to: $hapDll"
-
-            # Cleanup: remove extraction folder + nupkg
-            Remove-Folder $extractDir
-            Remove-Item $tmpNupkg -Force
-        }
-
-        # --- Load the DLL (PS 5.x safe) ---
-        # Load via byte array instead of file path so .NET does not hold a
-        # file lock on the DLL. This allows -Clean to delete it
-        # even in the same PowerShell session
-        $hapLoaded = $false
-        try {
-            [void][HtmlAgilityPack.HtmlDocument]
-            $hapLoaded = $true
-        } catch {}
-
-        if (-not $hapLoaded) {
-            Write-Verbose "Loading HtmlAgilityPack from bytes: $hapDll"
-            $hapBytes = [System.IO.File]::ReadAllBytes($hapDll)
-            [void][System.Reflection.Assembly]::Load($hapBytes)
-            Write-Debug "HtmlAgilityPack loaded from byte array (file lock avoided)"
-        }
-    }
-}
-
 
 # Main orchestration
 try {

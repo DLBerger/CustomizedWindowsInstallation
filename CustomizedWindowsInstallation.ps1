@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "29aabb3"
+$GitHash = "04f1b7a"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -1437,7 +1437,7 @@ function Invoke-KBWork {
             [Parameter(Mandatory)]
             [string]$KBIndex
         )
-        Write-Verbose ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
+        Write-Host ("Searching for {0}{1}..." -f $Query, $(if ($MaxResults -ne 0) { " (max results: $MaxResults)" } else { "" }))
         $Encoded = [uri]::EscapeDataString($Query)
         $Uri = "https://www.catalog.update.microsoft.com/Search.aspx?q=$Encoded"
         Write-Debug "Encoded URI: $Uri"
@@ -1971,7 +1971,7 @@ function Invoke-KBWork {
         [PSCustomObject]@{
             Query        = ".NET Security Updates Windows $WinOS $Version $Arch"
             MaxResults   = 0
-            KBIndex      = 'NET'
+            KBIndex      = 'OSCU'
         }
         [PSCustomObject]@{
             Query        = ".NET 8.0 $Arch Client"
@@ -2270,9 +2270,9 @@ function Invoke-ServiceWork {
                 if (-not (Test-Path $fullPath)) {
                     throw "Re-run -KB as file in manifest $(FolderRelName $manifestPath) missing: $(FolderRelName $fullPath)"
                 }
-                # Used to include .cab files, but .cab files don't install with DISM properly
-                if ($item.FileName -like '*.msu') {
+                if (($item.FileName -like '*.msu') -or ($item.FileName -like '*.cab')) {
                     $file = Get-Item -Path $fullPath
+                    $file | Add-Member -NotePropertyName 'Date' -NotePropertyValue $item.Date -Force
                     $file | Add-Member -NotePropertyName 'Title' -NotePropertyValue $item.Title -Force
                     $files += $file
                 }
@@ -2313,13 +2313,13 @@ function Invoke-ServiceWork {
             [Parameter(Mandatory = $true)]
             [bool]   $Unmount,
 
-            [Parameter(Mandatory = $true)]
-            [string] $PkgName,
+            [AllowNull()]
+            [AllowEmptyString()]
+            [string] $PkgName = "",
 
-            [Parameter(Mandatory = $true)]
             [AllowNull()]
             [AllowEmptyCollection()]
-            [System.IO.FileInfo[]] $Pkgs
+            [System.IO.FileInfo[]] $Pkgs = @()
         )
 
         Write-Verbose "Add-Packages: IdxName='$IdxName' MountDir='$MountDir' Src='$Src' Dest='$Dest' Mount=$Mount Unmount=$Unmount PkgName='$PkgName' Pkgs=$($Pkgs.Count)"
@@ -2344,10 +2344,10 @@ function Invoke-ServiceWork {
         $relMountDir      = FolderRelName $MountDir
         $relEffectiveDest = FolderRelName $effectiveDest
 
-        # We can bail early if there are no packages to apply if there are no packages to apply on we're mounting and dismounting
+        # We can bail early if there are no packages to apply and we're mounting and dismounting
         $hasPkgs = $Pkgs -and $Pkgs.Count -gt 0
         if (-not $hasPkgs -and $Mount -and $Unmount) {
-            Write-Host "    No $PkgName files supplied for $idxName and mounting/unmounting so nothing to do"
+            Write-Host ("    No {0}files supplied for $idxName and mounting/unmounting so nothing to do" -f ($PkgName -join ' '))
             return
         }
 
@@ -2355,11 +2355,13 @@ function Invoke-ServiceWork {
         $isCurrentlyMounted = $false
 
         try {
+            # Mount and cleanup will use these
+            $leafDest     = Split-Path -Path $effectiveDest -Leaf
+            $safeLeafDest = Protect-Token $leafDest
+
             if ($Mount) {
                 Ensure-Folder $MountDir
-                $leaf     = Split-Path -Path $effectiveDest -Leaf
-                $safeLeaf = Protect-Token $leaf
-                $mountLog = Join-Path $paths.WimsLogs ("mount_{0}_{1}.log" -f $idxName, $safeLeaf)
+                $mountLog = Join-Path $paths.WimsLogs ("mount_{0}_{1}.log" -f $idxName, $safeLeafDest)
 
                 # Clean the scratch directory to be safe
                 Remove-Folder $scratchDir
@@ -2377,10 +2379,6 @@ function Invoke-ServiceWork {
                 if ($LASTEXITCODE -ne 0) {
                     throw "DISM mount failed for '$relEffectiveDest' (exit $(& $Hex $LASTEXITCODE))"
                 }
-                $isCurrentlyMounted = $true
-            } else {
-                # If we bypassed mounting, we assume it's already open from a previous stage
-                if (Test-Path $MountDir) { $isCurrentlyMounted = $true }
             }
 
             if ($hasPkgs) {
@@ -2395,8 +2393,8 @@ function Invoke-ServiceWork {
                     Write-Host "    Applying $PkgName file to $($idxName): $($pkg.Name)"
                     Write-Host "      $($pkg.Title)"
                     Run-Dism @(
-                        "/Add-Package",
                         "`"/Image:$MountDir`"",
+                        "/Add-Package",
                         "`"/PackagePath:$($pkg.FullName)`"",
                         "`"/ScratchDir:$scratchDir`"",
                         "`"/LogPath:$pkgLog`""
@@ -2406,8 +2404,21 @@ function Invoke-ServiceWork {
                         Write-Warning "    Add-Package failed for $($pkg.Name) on $idxName (exit $(& $Hex $LASTEXITCODE)) - continuing"
                     }
                 }
-            } else {
-                Write-Host "    No $PkgName files supplied for $idxName so skipping package application"
+
+                # Run the component cleanup to eliminate the cruff
+                $cleanupLog = Join-Path $paths.WimsLogs ("cleanup_{0}_{1}.log" -f $idxName, $safeLeafDest)
+                Write-Host "    Cleaning up $idxName at $relMountDir"
+                Run-Dism @(
+                    "`"/Image:$MountDir`"",
+                    "/Cleanup-Image",
+                    "/StartComponentCleanup",
+                    "/ResetBase",
+                    "`"/LogPath:$cleanupLog`""
+                ) -Indent 4
+
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "    Cleanup-Image failed for $($pkg.Name) on $idxName (exit $(& $Hex $LASTEXITCODE)) - continuing"
+                }
             }
 
             if ($Unmount) {
@@ -2416,13 +2427,12 @@ function Invoke-ServiceWork {
                 if ($LASTEXITCODE -ne 0) {
                     throw "DISM unmount (commit) failed for '$relMountDir' (exit $(& $Hex $LASTEXITCODE))"
                 }
-                $isCurrentlyMounted = $false
             }
         }
         catch {
             Write-Host "    ERROR in Add-Packages for $($idxName): $_" -ForegroundColor Red
-            if ($isCurrentlyMounted -and (Test-Path $MountDir)) {
-                Write-Host "    CRITICAL FAILURE DETECTED: Discarding mounted image changes at $($MountDir) to protect original WIM..." -ForegroundColor Yellow
+            if (Test-Path $MountDir) {
+                Write-Host "    CRITICAL FAILURE DETECTED: Discarding mounted image changes at '$relMountDir' to protect original WIM..." -ForegroundColor Yellow
                 Run-Dism @("/Unmount-Image", "`"/MountDir:$MountDir`"", "/Discard") -Indent 4
             }
             throw
@@ -2452,11 +2462,9 @@ function Invoke-ServiceWork {
         $imgJson      = Join-Path $paths.WimsServiced ("{0}.json" -f $idxName)
         $lastServiced = Fetch-Date $imgJson
     
-        $dependencies = @()
+        $dependencies = $ssuFiles
         if ($InstallType) {
-            $dependencies = $ssuFiles + $lcuFiles
-        } else {
-            $dependencies = $ssuFiles
+            $dependencies += $lcuFiles
         }
     
         $needsServicing = $false
@@ -2467,9 +2475,10 @@ function Invoke-ServiceWork {
             $reportMessage  = "    Found newer base extraction: $(FolderRelName $extractJson) ($extractDate)"
         } else {
             foreach ($dep in $dependencies) {
-                if ($dep.Date -gt $lastServiced) {
+                $depDate = [datetime]::Parse($dep.Date)
+                if ($depDate -gt $lastServiced) {
                     $needsServicing = $true
-                    $reportMessage  = "    Found newer dependent file: $(FolderRelName $dep.FullName) ($($dep.Date))"
+                    $reportMessage  = "    Found newer dependent file: $(FolderRelName $dep.FullName) ($($depDate))"
                     break
                 }
             }
@@ -2490,8 +2499,8 @@ function Invoke-ServiceWork {
     
         try {
             if ($InstallType) {
-                # Install WIM: copy extracted to serviced, mount and service SSUs (may be empty) on install.wim
-                Add-Packages -IdxName $idxName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $false -PkgName "SSU" -Pkgs $ssuFiles
+                # Install WIM: copy extracted to serviced, mount, but no longer apply SSUs
+                Add-Packages -IdxName $idxName -MountDir $mountDir -Src $wimPath -Dest $srvPath -Mount $true -Unmount $false
     
                 # Mount embedded WinRE, service with SSUs, and safely dismount
                 $winrePath      = Join-Path $mountDir $paths.WinreWimInWim
@@ -2522,7 +2531,7 @@ function Invoke-ServiceWork {
             # Global clean recovery fallback mechanism
             if (Test-Path $mountDir) {
                 Write-Host "    Emergency Unmounting and Discarding Parent Mount: $mountDir" -ForegroundColor Yellow
-                Run-Dism @("/Unmount-Image", "/MountDir:$mountDir", "/Discard") -ErrorAction SilentlyContinue
+                Run-Dism @("/Unmount-Image", "/MountDir:$mountDir", "/Discard") -ErrorAction SilentlyContinue -Indent 4
             }
             throw
         }
