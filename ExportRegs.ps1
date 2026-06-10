@@ -27,6 +27,18 @@ $RegistryAddModify = @(
         Values = @('FullPath')
     },
     @{
+        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
+        Values = @('TaskbarEndTask')
+    },
+    @{
+        Key    = 'HKEY_CURRENT_USER\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+        Values = @('HideRecommendedSection')
+    },
+    @{
+        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Start'
+        Values = @('AllAppsViewMode')
+    },
+    @{
         Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsUpdate\UX\Settings'
         Values = @('AllowMUUpdateService')
     },
@@ -39,8 +51,12 @@ $RegistryAddModify = @(
         Values = @('HibernateEnabled')
     },
     @{
-        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
-        Values = @('TaskbarEndTask')
+        Key    = 'HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+        Values = @('HideRecommendedSection')
+    },
+    @{
+        Key    = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\PolicyManager\current\device\Start'
+        Values = @('HideRecommendedSection')
     }
 )
 
@@ -158,7 +174,16 @@ function RegAppendDelete([string]$dest, [string]$key, [string[]]$values) {
 # ==============================
 # Resolve working folder and make sure it exists
 # ==============================
-if (-not (Test-Path $Folder)) { New-Item -ItemType Directory -Path $Folder -Force | Out-Null }
+
+# If the user passed a relative path (like ".\Registry"), resolve it relative to the script location
+if (-not ([System.IO.Path]::IsPathRooted($Folder))) {
+    $Folder = Join-Path $PSScriptRoot $Folder
+}
+
+if (-not (Test-Path $Folder)) {
+    New-Item -ItemType Directory -Path $Folder -Force | Out-Null
+}
+
 $Folder = (Resolve-Path -LiteralPath $Folder -ErrorAction Continue).ProviderPath
 Write-Output "Resolved working folder: $Folder"
 
