@@ -1,7 +1,8 @@
 param([string]$Folder = '.\Registry')
 
 
-# An empty list in the Values means work on the entire key
+# An empty list in the Values means work on the entire key. '*' and '?' are supported as wildcards.
+# Try to keep in alphabetical order.
 $RegistryAddModify = @(
     @{
         Key    = 'HKEY_CLASSES_ROOT\AllFilesystemObjects\shell\Windows.ShowFileExtensions'
@@ -10,6 +11,14 @@ $RegistryAddModify = @(
     @{
         Key    = 'HKEY_CLASSES_ROOT\Directory\Background\shell\Windows.ShowFileExtensions'
         Values = @()
+    },
+    @{
+        Key    = 'HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\*'
+        Values = @('IsPromoted')
+    },
+    @{
+        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
+        Values = @('TaskbarEndTask')
     },
     @{
         Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
@@ -27,35 +36,31 @@ $RegistryAddModify = @(
         Values = @('FullPath')
     },
     @{
-        Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'
-        Values = @('TaskbarEndTask')
-    },
-    @{
-        Key    = 'HKEY_CURRENT_USER\SOFTWARE\Policies\Microsoft\Windows\Explorer'
-        Values = @('HideRecommendedSection')
-    },
-    @{
         Key    = 'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Start'
         Values = @('AllAppsViewMode')
+    },
+    @{
+        Key    = 'HKEY_CURRENT_USER\Software\Policies\Microsoft\Windows\Explorer'
+        Values = @('HideRecommendedSection')
     },
     @{
         Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsUpdate\UX\Settings'
         Values = @('AllowMUUpdateService')
     },
     @{
-        Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem'
+        Key    = 'HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\FileSystem'
         Values = @('LongPathsEnabled')
     },
     @{
-        Key    = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Power'
+        Key    = 'HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Power'
         Values = @('HibernateEnabled')
     },
     @{
-        Key    = 'HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows\Explorer'
+        Key    = 'HKEY_LOCAL_MACHINE\Software\Policies\Microsoft\Windows\Explorer'
         Values = @('HideRecommendedSection')
     },
     @{
-        Key    = 'HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\PolicyManager\current\device\Start'
+        Key    = 'HKEY_LOCAL_MACHINE\Software\Microsoft\PolicyManager\current\device\Start'
         Values = @('HideRecommendedSection')
     }
 )
@@ -70,12 +75,132 @@ function RegSafeName([string]$key) {
     ($key -replace '[\\/:*?"<>|]', '_') + '.reg'
 }
 
-function RegExportEntireKey([string]$key, [string]$dest) {
-    Write-Output "Export ENTIRE key: $key -> $dest"
-    reg.exe export "$key" "$dest" /y | Out-Null
+function Convert-PsPathToHKey([string]$psPath) {
+    if ($psPath -match 'Registry::(.+)$') {
+        return $matches[1]
+    }
+    return $psPath
 }
 
-function RegExportSpecificValues([string]$key, [string]$dest, [object[]]$groups) {
+function Expand-RegistryKeyPatternSegments([string]$psPath, [string[]]$segments) {
+    if (-not $segments -or $segments.Count -eq 0) {
+        return @(Convert-PsPathToHKey $psPath)
+    }
+
+    $segment = $segments[0]
+    $tail = @()
+    if ($segments.Count -gt 1) {
+        $tail = $segments[1..($segments.Count - 1)]
+    }
+
+    $found = @()
+    if ($segment -match '[\*\?]') {
+        if (Test-Path -LiteralPath $psPath) {
+            Get-ChildItem -LiteralPath $psPath -ErrorAction SilentlyContinue |
+                Where-Object { $_.PSChildName -like $segment } |
+                ForEach-Object {
+                    $found += Expand-RegistryKeyPatternSegments $_.PSPath $tail
+                }
+        }
+    } else {
+        $next = Join-Path $psPath $segment
+        if (Test-Path -LiteralPath $next) {
+            $found += Expand-RegistryKeyPatternSegments $next $tail
+        }
+    }
+
+    return $found
+}
+
+function Expand-RegistryKeyPattern([string]$keyPattern) {
+    if ($keyPattern -notmatch '[\*\?]') {
+        return @($keyPattern)
+    }
+
+    $parts = $keyPattern -split '\\', 2
+    $hive = $parts[0]
+    $rest = $parts[1]
+
+    $psRoot = $null
+    switch ($hive) {
+        'HKEY_CURRENT_USER'   { $psRoot = 'HKCU:' }
+        'HKEY_LOCAL_MACHINE'  { $psRoot = 'HKLM:' }
+        'HKEY_CLASSES_ROOT'   { $psRoot = 'HKCR:' }
+        'HKEY_USERS'          { $psRoot = 'HKU:' }
+        'HKEY_CURRENT_CONFIG' { $psRoot = 'HKCC:' }
+    }
+
+    if (-not $psRoot) {
+        Write-Output "WARNING: Unknown hive in key pattern: $keyPattern"
+        return @()
+    }
+
+    $segments = $rest -split '\\'
+    return Expand-RegistryKeyPatternSegments $psRoot $segments
+}
+
+function Format-RegValueLine([string]$valName, [string]$type, [string]$data) {
+    switch ($type) {
+        "SZ" {
+            return '"' + $valName + '"="' + $data + '"'
+        }
+        "DWORD" {
+            return '"' + $valName + '"=dword:' + ("{0:x8}" -f [int]$data)
+        }
+        default {
+            return '"' + $valName + '"="' + $data + '"'
+        }
+    }
+}
+
+function RegExportEntireKey([string]$keyPattern, [string]$dest) {
+    $keys = @(Expand-RegistryKeyPattern $keyPattern)
+    if (-not $keys -or $keys.Count -eq 0) {
+        Write-Output "WARNING: No keys matched pattern: $keyPattern"
+        return
+    }
+
+    if ($keys.Count -eq 1) {
+        Write-Output "Export ENTIRE key: $($keys[0]) -> $dest"
+        reg.exe export "$($keys[0])" "$dest" /y | Out-Null
+        return
+    }
+
+    Write-Output "Export ENTIRE key: $($keys.Count) key(s) matching $keyPattern -> $dest"
+
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add("Windows Registry Editor Version 5.00")
+    $out.Add("")
+
+    $temp = [System.IO.Path]::GetTempFileName()
+    foreach ($key in ($keys | Sort-Object -Unique)) {
+        Write-Output "  Exporting $key"
+        reg.exe export "$key" "$temp" /y | Out-Null
+        if (-not (Test-Path $temp)) {
+            continue
+        }
+
+        $started = $false
+        foreach ($line in (Get-Content $temp)) {
+            if (-not $started) {
+                if ($line -match '^\[') {
+                    $started = $true
+                    $out.Add($line)
+                }
+            } else {
+                $out.Add($line)
+            }
+        }
+    }
+
+    Remove-Item $temp -Force -ErrorAction SilentlyContinue
+
+    if ($out.Count -gt 2) {
+        $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
+    }
+}
+
+function RegExportSpecificValues([string]$keyPattern, [string]$dest, [object[]]$groups) {
 
     # Flatten values, skipping null/empty
     $allValues = @()
@@ -88,53 +213,58 @@ function RegExportSpecificValues([string]$key, [string]$dest, [object[]]$groups)
     $allValues = $allValues | Sort-Object -Unique
 
     if (-not $allValues -or $allValues.Count -eq 0) {
-        Write-Output "No specific values requested for $key; skipping."
+        Write-Output "No specific values requested for $keyPattern; skipping."
         return
     }
 
-    Write-Output "Export specific values [$($allValues -join ', ')] from $key -> $dest"
-
-    $query = reg.exe query "$key" /v * 2>$null
-    if (-not $query) {
-        Write-Output "WARNING: No data returned for $key"
+    $keys = @(Expand-RegistryKeyPattern $keyPattern)
+    if (-not $keys -or $keys.Count -eq 0) {
+        Write-Output "WARNING: No keys matched pattern: $keyPattern"
         return
     }
+
+    Write-Output "Export specific values [$($allValues -join ', ')] from $($keys.Count) key(s) matching $keyPattern -> $dest"
 
     $out = New-Object System.Collections.Generic.List[string]
     $out.Add("Windows Registry Editor Version 5.00")
     $out.Add("")
 
-    $header = "[" + $key + "]"
-    $out.Add($header)
+    foreach ($key in ($keys | Sort-Object -Unique)) {
 
-    foreach ($line in $query) {
+        $query = reg.exe query "$key" /v * 2>$null
+        if (-not $query) {
+            Write-Output "WARNING: No data returned for $key"
+            continue
+        }
 
-        if ($line -match '^\s+([^\s]+)\s+REG_([A-Z0-9_]+)\s+(.*)$') {
+        $sectionLines = New-Object System.Collections.Generic.List[string]
+        $sectionLines.Add("[" + $key + "]")
 
-            $valName = $matches[1]
-            $type    = $matches[2]
-            $data    = $matches[3]
+        foreach ($line in $query) {
 
-            if ($allValues -contains $valName) {
+            if ($line -match '^\s+([^\s]+)\s+REG_([A-Z0-9_]+)\s+(.*)$') {
 
-                switch ($type) {
-                    "SZ" {
-                        $regLine = '"' + $valName + '"="' + $data + '"'
-                    }
-                    "DWORD" {
-                        $regLine = '"' + $valName + '"=dword:' + ("{0:x8}" -f [int]$data)
-                    }
-                    default {
-                        $regLine = '"' + $valName + '"="' + $data + '"'
-                    }
+                $valName = $matches[1]
+                $type    = $matches[2]
+                $data    = $matches[3]
+
+                if ($allValues -contains $valName) {
+                    $sectionLines.Add((Format-RegValueLine $valName $type $data))
                 }
-
-                $out.Add($regLine)
             }
+        }
+
+        if ($sectionLines.Count -gt 1) {
+            foreach ($l in $sectionLines) { $out.Add($l) }
+            $out.Add("")
         }
     }
 
-    $out.Add("")
+    if ($out.Count -le 2) {
+        Write-Output "WARNING: No matching values found for pattern: $keyPattern"
+        return
+    }
+
     $out -join "`r`n" | Set-Content -Path $dest -Encoding Unicode
 }
 
@@ -243,8 +373,16 @@ foreach ($entry in $RegistryRemove) {
         }
     }
 
+    $keys = @(Expand-RegistryKeyPattern $key)
+    if (-not $keys -or $keys.Count -eq 0) {
+        Write-Output "WARNING: No keys matched pattern: $key"
+        continue
+    }
+
     if ($hasEntire) {
-        RegAppendDelete $dest $key @()
+        foreach ($matchedKey in ($keys | Sort-Object -Unique)) {
+            RegAppendDelete $dest $matchedKey @()
+        }
     } else {
         $allValues = @()
         foreach ($g in $groups) {
@@ -255,6 +393,8 @@ foreach ($entry in $RegistryRemove) {
         }
         $allValues = $allValues | Sort-Object -Unique
 
-        RegAppendDelete $dest $key $allValues
+        foreach ($matchedKey in ($keys | Sort-Object -Unique)) {
+            RegAppendDelete $dest $matchedKey $allValues
+        }
     }
 }
