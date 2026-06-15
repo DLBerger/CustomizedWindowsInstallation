@@ -3,11 +3,12 @@ setlocal enabledelayedexpansion
 set "SRC=%~dp0"
 
 set "REGCMD=%SRC%\InstallRegs.cmd"
+set "MISSINGCMD=%SRC%\InstallMissingDrivers.cmd"
 set "NETCMD=%SRC%\Update.NET.cmd"
 set "EDGECMD=%SRC%\UpdateEdge.cmd"
 
 :: Abort if required files are missing
-for %%F in ("%REGCMD%" "%NETCMD%" %EDGECMD%) do (
+for %%F in ("%REGCMD%" "%MISSINGCMD%" "%NETCMD%" %EDGECMD%) do (
     if not exist %%F (
         echo ERROR: Required file not found: %%F
         exit /b 1
@@ -16,6 +17,9 @@ for %%F in ("%REGCMD%" "%NETCMD%" %EDGECMD%) do (
 
 echo Importing registry files
 call "%REGCMD%"
+
+echo Installing Missing Drivers
+call "%MISSINGCMD%"
 
 echo Updating .NET
 call "%NETCMD%"
