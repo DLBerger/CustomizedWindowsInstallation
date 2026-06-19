@@ -3,23 +3,44 @@ setlocal
 
 set "SRC=%~dp0"
 set "DRV=Drivers"
+set "DRIVER_ARGS="
+
+echo =======================================================================
+echo Windows Setup Automation Wrapper
+echo Running from: %SRC%
+echo =======================================================================
+echo.
 
 :: ----------------------------------------------------------------------------
-::  Validate Driver Folder Presence
+::  Driver Installation (Optional)
 :: ----------------------------------------------------------------------------
-if not exist "%SRC%%DRV%" goto fail
+if exist "%SRC%%DRV%" (
+    echo Found driver folder at: "%SRC%%DRV%"
+    echo.
+    echo Do you want to install drivers from the Drivers folder?
+    echo [N] No  - do not install drivers - DEFAULT
+    echo [Y] Yes - include drivers during setup
+    echo.
+    set "TIMEOUT=30"
+
+    choice /C NY /T %TIMEOUT% /D N /M "Install drivers (Will default to No in %TIMEOUT% seconds):"
+
+    if errorlevel 2 set "DRIVER_ARGS=/InstallDrivers "%SRC%%DRV%""
+)
 
 :: ----------------------------------------------------------------------------
 ::  Consolidate Common Setup.exe Arguments
 :: ----------------------------------------------------------------------------
 :: These arguments are identical for both Upgrade and Clean Install scenarios.
-set "ARGS=/Eula Accept /DynamicUpdate Disable /Telemetry Disable /InstallDrivers "%SRC%%DRV%""
+set "ARGS=/Eula Accept /DynamicUpdate Disable /Telemetry Disable"
 
-echo =======================================================================
-echo Windows Setup Automation Wrapper
-echo Running from: %SRC%
-echo Found driver folder at: "%SRC%%DRV%"
-echo =======================================================================
+if defined DRIVER_ARGS (
+    echo.
+    echo Drivers will be installed from: "%SRC%%DRV%"
+) else (
+    echo.
+    echo Drivers will not be installed during setup.
+)
 echo.
 
 :: ----------------------------------------------------------------------------
@@ -35,7 +56,7 @@ choice /C UC /T %TIMEOUT% /D U /M "Enter your choice (Will default to Upgrade in
 
 if errorlevel 2 goto confirm_clean
 if errorlevel 1 goto do_upgrade
-goto fail
+goto end
 
 :: ----------------------------------------------------------------------------
 ::  Action: Upgrade Execution
@@ -43,7 +64,7 @@ goto fail
 :do_upgrade
 echo.
 echo Launching Windows Setup for In-Place Upgrade...
-"%SRC%setup.exe" /Auto Upgrade %ARGS%
+"%SRC%setup.exe" /Auto Upgrade %ARGS% %DRIVER_ARGS%
 goto end
 
 :: ----------------------------------------------------------------------------
@@ -64,12 +85,12 @@ choice /C YN /M "Are you absolutely sure you want to completely clear this PC an
 
 if errorlevel 2 goto menu_cancel
 if errorlevel 1 goto do_clean
-goto fail
+goto end
 
 :do_clean
 echo.
 echo Launching Windows Setup for Automated Clean Install...
-"%SRC%setup.exe" /Auto Clean %ARGS%
+"%SRC%setup.exe" /Auto Clean %ARGS% %DRIVER_ARGS%
 goto end
 
 :menu_cancel
@@ -77,20 +98,6 @@ echo.
 echo Operations cancelled by user. Returning to command prompt...
 pause
 goto end
-
-:: ----------------------------------------------------------------------------
-::  Fail Handler
-:: ----------------------------------------------------------------------------
-:fail
-echo.
-echo =======================================================================
-echo ERROR: The '%DRV%' folder was not found in:
-echo "%SRC%"
-echo The process has been halted to prevent missing hardware drivers.
-echo =======================================================================
-echo.
-pause
-exit /b 1
 
 :end
 endlocal
