@@ -4,6 +4,7 @@ setlocal
 set "SRC=%~dp0"
 set "DRV=Drivers"
 set "DRIVER_ARGS="
+set "TIMEOUT=30"
 
 echo =======================================================================
 echo Windows Setup Automation Wrapper
@@ -14,19 +15,20 @@ echo.
 :: ----------------------------------------------------------------------------
 ::  Driver Installation (Optional)
 :: ----------------------------------------------------------------------------
-if exist "%SRC%%DRV%" (
-    echo Found driver folder at: "%SRC%%DRV%"
-    echo.
-    echo Do you want to install drivers from the Drivers folder?
-    echo [N] No  - do not install drivers - DEFAULT
-    echo [Y] Yes - include drivers during setup
-    echo.
-    set "TIMEOUT=30"
+if not exist "%SRC%%DRV%" goto drivers_done
 
-    choice /C NY /T %TIMEOUT% /D N /M "Install drivers (Will default to No in %TIMEOUT% seconds):"
+echo Found driver folder at: "%SRC%%DRV%"
+echo.
+echo Do you want to install drivers from the Drivers folder?
+echo [N] No  - do not install drivers - DEFAULT
+echo [Y] Yes - include drivers during setup
+echo.
 
-    if errorlevel 2 set "DRIVER_ARGS=/InstallDrivers "%SRC%%DRV%""
-)
+choice /C NY /T %TIMEOUT% /D N /M "Install drivers (Will default to No in %TIMEOUT% seconds):"
+
+if errorlevel 2 set "DRIVER_ARGS=/InstallDrivers "%SRC%%DRV%""
+
+:drivers_done
 
 :: ----------------------------------------------------------------------------
 ::  Consolidate Common Setup.exe Arguments
@@ -50,7 +52,6 @@ echo Select the type of installation you want to perform:
 echo [U] Upgrade (Keeps files, settings, and apps) - DEFAULT
 echo [C] Clean Install (WIPES THE DRIVE - Fresh OS installation)
 echo.
-set "TIMEOUT=30"
 
 choice /C UC /T %TIMEOUT% /D U /M "Enter your choice (Will default to Upgrade in %TIMEOUT% seconds):"
 
