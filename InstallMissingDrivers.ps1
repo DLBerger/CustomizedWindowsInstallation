@@ -1,11 +1,18 @@
 <#
 
 .SYNOPSIS
-Installs missing drivers by matching unknown device Hardware IDs against a folder of INF files.
+Installs only the best-matching drivers for devices that are missing drivers.
 
 .DESCRIPTION
-This script scans the system for devices missing drivers, extracts their Hardware/Compatible IDs,
-and selectively installs only the required INF files from the specified folder using pnputil.
+Finds present devices with CM problem code 28 (drivers not installed), then uses
+Windows SetupAPI to rank compatible INF packages under -Folder without staging
+them into the Driver Store. Only the single best INF selected for each device
+is added/installed via pnputil.
+
+.PARAMETER Folder
+Root folder containing driver packages (searched recursively). Relative paths
+are resolved from the script directory.
+
 #>
 
 [CmdletBinding()]
@@ -13,187 +20,496 @@ param(
     [string]$Folder = ".\Drivers"
 )
 
-# If the user passed a relative path (like ".\Drivers"), resolve it relative to the script location
+$ErrorActionPreference = 'Stop'
+
+# Resolve relative paths from the script location
 if (-not ([System.IO.Path]::IsPathRooted($Folder))) {
     $Folder = Join-Path $PSScriptRoot $Folder
 }
 
-if (-not (Test-Path $Folder)) {
-    New-Item -ItemType Directory -Path $Folder -Force | Out-Null
-}
-
-$Folder = (Resolve-Path -LiteralPath $Folder -ErrorAction Continue).ProviderPath
-Write-Host "Resolved driver folder: $Folder" -ForegroundColor Green
-
-function Test-HwIdMatchesInfContent {
-    param(
-        [string]$HwId,
-        [string]$InfContent
-    )
-
-    if ([string]::IsNullOrWhiteSpace($HwId) -or [string]::IsNullOrWhiteSpace($InfContent)) {
-        return $false
-    }
-
-    # Full ID match (rare but valid when INF lists the complete hardware ID)
-    if ($InfContent.IndexOf($HwId, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        return $true
-    }
-
-    # INF entries are usually shorter prefixes of the device-reported ID
-    # (e.g. INF has PCI\VEN_8086&DEV_15F3, device reports ...&SUBSYS_...&REV_...)
-    $parts = $HwId -split '&'
-    $prefix = ''
-    foreach ($part in $parts) {
-        if ($prefix) {
-            $prefix = "$($prefix)&$($part)"
-        } else {
-            $prefix = $part
-        }
-
-        if ($InfContent.IndexOf($prefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            return $true
-        }
-    }
-
-    return $false
-}
-
-function Get-DriverStoreOriginalInfNames {
-    $names = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    $enumOutput = & pnputil.exe /enum-drivers 2>&1
-    if (-not $enumOutput) {
-        return $names
-    }
-
-    $joined = $enumOutput -join "`n"
-    $blocks = [regex]::Split($joined, "^\s*$", [System.Text.RegularExpressions.RegexOptions]::Multiline)
-
-    foreach ($block in $blocks) {
-        if ([string]::IsNullOrWhiteSpace($block)) { continue }
-        foreach ($line in ($block -split "`n")) {
-            $trim = $line.Trim()
-            if ($trim -match 'Original Name\s*:\s*(.+)') {
-                $origFile = [System.IO.Path]::GetFileName($matches[1].Trim())
-                if (-not [string]::IsNullOrWhiteSpace($origFile)) {
-                    $names.Add($origFile) | Out-Null
-                }
-                break
-            }
-        }
-    }
-
-    return $names
-}
-
-Write-Host "Searching Device Manager for devices missing drivers..." -ForegroundColor Cyan
-
-# 2. Find devices missing drivers 
-# Problem 28 is standard for "The drivers for this device are not installed."
-$MissingDevices = Get-PnpDevice | Where-Object { 
-    $_.Problem -eq 28 -or 
-    $_.Status -eq 'Error' -or 
-    $_.Status -eq 'Unknown' 
-}
-
-if (-not $MissingDevices) {
-    Write-Host "All devices currently have drivers installed. Nothing to do!" -ForegroundColor Green
-    Exit 0
-}
-
-Write-Host "Found $( $MissingDevices.Count ) device(s) missing drivers. Extracting Hardware IDs..." -ForegroundColor Cyan
-
-# 3. Extract Hardware and Compatible IDs for the missing devices
-$MissingHwIds = @()
-
-foreach ($Device in $MissingDevices) {
-    $HwIdProp = Get-PnpDeviceProperty -InstanceId $Device.InstanceId -KeyName 'DEVPKEY_Device_HardwareIds' -ErrorAction SilentlyContinue
-    $CompIdProp = Get-PnpDeviceProperty -InstanceId $Device.InstanceId -KeyName 'DEVPKEY_Device_CompatibleIds' -ErrorAction SilentlyContinue
-    
-    if ($HwIdProp.Data) {
-        foreach ($id in @($HwIdProp.Data)) {
-            if (-not [string]::IsNullOrWhiteSpace($id)) { $MissingHwIds += $id }
-        }
-    }
-    if ($CompIdProp.Data) {
-        foreach ($id in @($CompIdProp.Data)) {
-            if (-not [string]::IsNullOrWhiteSpace($id)) { $MissingHwIds += $id }
-        }
-    }
-}
-
-# Clean up the list (remove empties and duplicates)
-$MissingHwIds = $MissingHwIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
-
-if (-not $MissingHwIds) {
-    Write-Warning "Could not retrieve Hardware IDs for the missing devices."
+if (-not (Test-Path -LiteralPath $Folder -PathType Container)) {
+    Write-Error "Driver folder not found: $Folder"
     Exit 1
 }
 
-Write-Host "Searching INF files in '$Folder' for matching IDs..." -ForegroundColor Cyan
+$Folder = (Resolve-Path -LiteralPath $Folder).ProviderPath
+Write-Host "Resolved driver folder: $Folder" -ForegroundColor Green
 
-# 4. Scan all INF files in the target folder for matches
-$AllInfs = Get-ChildItem -Path $Folder -Recurse -File |
-    Where-Object { $_.Extension -ieq '.inf' }
-$MatchedInfs = @()
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+if (-not $isAdmin) {
+    Write-Error "This script must be run as Administrator."
+    Exit 1
+}
 
-foreach ($Inf in $AllInfs) {
-    try {
-        $InfContent = Get-Content -LiteralPath $Inf.FullName -Raw -ErrorAction Stop
-    } catch {
-        Write-Warning "Skipping unreadable path: $($Inf.FullName) ($($_.Exception.Message))"
-        continue
+$setupApiCode = @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+namespace SetupApiDriverHelperV3
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SP_DEVINFO_DATA
+    {
+        public int cbSize;
+        public Guid ClassGuid;
+        public int DevInst;
+        public IntPtr Reserved;
     }
 
-    if ([string]::IsNullOrWhiteSpace($InfContent)) {
-        continue
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SP_DEVINSTALL_PARAMS
+    {
+        public int cbSize;
+        public int Flags;
+        public int FlagsEx;
+        public IntPtr hwndParent;
+        public IntPtr InstallMsgHandler;
+        public IntPtr InstallMsgHandlerContext;
+        public IntPtr FileQueue;
+        public IntPtr ClassInstallReserved;
+        public int Reserved;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string DriverPath;
     }
-    
-    foreach ($HwId in $MissingHwIds) {
-        if (Test-HwIdMatchesInfContent -HwId $HwId -InfContent $InfContent) {
-            $MatchedInfs += $Inf.FullName
-            break # Match found, stop checking this INF against other IDs and move to the next INF
+
+    // Pack=4 matches setupapi.h pshpack1/pack usage for this struct on both x86/x64.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode, Pack = 4)]
+    public struct SP_DRVINFO_DATA
+    {
+        public int cbSize;
+        public int DriverType;
+        public IntPtr Reserved;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string Description;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string MfgName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string ProviderName;
+        public System.Runtime.InteropServices.ComTypes.FILETIME DriverDate;
+        public ulong DriverVersion;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SP_DRVINSTALL_PARAMS
+    {
+        public int cbSize;
+        public uint Rank;
+        public int Flags;
+        public IntPtr PrivateData;
+        public int Reserved;
+    }
+
+    // Default packing (8 on x64) — Pack=4 misaligns FILETIME and causes error 1784.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SP_DRVINFO_DETAIL_DATA
+    {
+        public int cbSize;
+        public System.Runtime.InteropServices.ComTypes.FILETIME InfDate;
+        public int CompatIDsOffset;
+        public int CompatIDsLength;
+        public IntPtr Reserved;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string SectionName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string InfFileName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string DrvDescription;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 1)]
+        public string HardwareID;
+    }
+
+    public class DriverMatch
+    {
+        public string InstanceId;
+        public string InfPath;
+        public string Description;
+        public string Provider;
+        public string Manufacturer;
+        public uint Rank;
+        public string Error;
+    }
+
+    public static class Native
+    {
+        private const int DIGCF_PRESENT = 0x00000002;
+        private const int DIGCF_ALLCLASSES = 0x00000004;
+        private const int SPDIT_COMPATDRIVER = 2;
+        private const int DIF_SELECTBESTCOMPATDRV = 0x00000017;
+        private const int DI_FLAGSEX_ALLOWEXCLUDEDDRVS = 0x00000800;
+        private const int DI_FLAGSEX_RECURSIVESEARCH = unchecked((int)0x40000000);
+        private const int ERROR_INSUFFICIENT_BUFFER = 122;
+        private const int ERROR_DI_BAD_PATH = unchecked((int)0xE000020B);
+        private const int ERROR_NO_COMPAT_DRIVERS = unchecked((int)0xE0000203);
+        // SetupAPI: "There are no compatible drivers for this device."
+        private const int ERROR_NO_COMPATIBLE_DRIVERS = unchecked((int)0xE0000228);
+        private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SetupDiGetClassDevs(
+            IntPtr ClassGuid,
+            string Enumerator,
+            IntPtr hwndParent,
+            int Flags);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiOpenDeviceInfo(
+            IntPtr DeviceInfoSet,
+            string DeviceInstanceId,
+            IntPtr hwndParent,
+            int OpenFlags,
+            ref SP_DEVINFO_DATA DeviceInfoData);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiGetDeviceInstallParams(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            ref SP_DEVINSTALL_PARAMS DeviceInstallParams);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiSetDeviceInstallParams(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            ref SP_DEVINSTALL_PARAMS DeviceInstallParams);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiBuildDriverInfoList(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            int DriverType);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiDestroyDriverInfoList(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            int DriverType);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiCallClassInstaller(
+            int InstallFunction,
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiGetSelectedDriver(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            ref SP_DRVINFO_DATA DriverInfoData);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiGetDriverInstallParams(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            ref SP_DRVINFO_DATA DriverInfoData,
+            ref SP_DRVINSTALL_PARAMS DriverInstallParams);
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiGetDriverInfoDetail(
+            IntPtr DeviceInfoSet,
+            ref SP_DEVINFO_DATA DeviceInfoData,
+            ref SP_DRVINFO_DATA DriverInfoData,
+            IntPtr DriverInfoDetailData,
+            int DriverInfoDetailDataSize,
+            out int RequiredSize);
+
+        private static string FormatWin32Error(int error)
+        {
+            return error.ToString() + " (0x" + ((uint)error).ToString("X8") + ")";
+        }
+
+        private static string TryGetInfPath(IntPtr detailPtr)
+        {
+            IntPtr nameOffset = Marshal.OffsetOf(typeof(SP_DRVINFO_DETAIL_DATA), "InfFileName");
+            IntPtr namePtr = new IntPtr(detailPtr.ToInt64() + nameOffset.ToInt64());
+            return Marshal.PtrToStringUni(namePtr);
+        }
+
+        public static DriverMatch[] SelectBestDrivers(string[] instanceIds, string driverFolder)
+        {
+            if (instanceIds == null)
+            {
+                throw new ArgumentNullException("instanceIds");
+            }
+            if (string.IsNullOrWhiteSpace(driverFolder))
+            {
+                throw new ArgumentException("driverFolder is required.");
+            }
+
+            List<DriverMatch> results = new List<DriverMatch>();
+            IntPtr deviceInfoSet = SetupDiGetClassDevs(
+                IntPtr.Zero,
+                null,
+                IntPtr.Zero,
+                DIGCF_PRESENT | DIGCF_ALLCLASSES);
+
+            if (deviceInfoSet == IntPtr.Zero || deviceInfoSet == INVALID_HANDLE_VALUE)
+            {
+                throw new InvalidOperationException(
+                    "SetupDiGetClassDevs failed: " + FormatWin32Error(Marshal.GetLastWin32Error()));
+            }
+
+            try
+            {
+                for (int i = 0; i < instanceIds.Length; i++)
+                {
+                    string instanceId = instanceIds[i];
+                    DriverMatch match = new DriverMatch();
+                    match.InstanceId = instanceId;
+                    results.Add(match);
+
+                    if (string.IsNullOrWhiteSpace(instanceId))
+                    {
+                        match.Error = "Empty InstanceId.";
+                        continue;
+                    }
+
+                    SP_DEVINFO_DATA deviceInfoData = new SP_DEVINFO_DATA();
+                    deviceInfoData.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+
+                    if (!SetupDiOpenDeviceInfo(deviceInfoSet, instanceId, IntPtr.Zero, 0, ref deviceInfoData))
+                    {
+                        match.Error = "SetupDiOpenDeviceInfo failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                        continue;
+                    }
+
+                    bool builtList = false;
+                    try
+                    {
+                        SP_DEVINSTALL_PARAMS installParams = new SP_DEVINSTALL_PARAMS();
+                        installParams.cbSize = Marshal.SizeOf(typeof(SP_DEVINSTALL_PARAMS));
+
+                        if (!SetupDiGetDeviceInstallParams(deviceInfoSet, ref deviceInfoData, ref installParams))
+                        {
+                            match.Error = "SetupDiGetDeviceInstallParams failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                            continue;
+                        }
+
+                        installParams.DriverPath = driverFolder;
+                        installParams.FlagsEx = installParams.FlagsEx |
+                            DI_FLAGSEX_ALLOWEXCLUDEDDRVS |
+                            DI_FLAGSEX_RECURSIVESEARCH;
+
+                        if (!SetupDiSetDeviceInstallParams(deviceInfoSet, ref deviceInfoData, ref installParams))
+                        {
+                            match.Error = "SetupDiSetDeviceInstallParams failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                            continue;
+                        }
+
+                        if (!SetupDiBuildDriverInfoList(deviceInfoSet, ref deviceInfoData, SPDIT_COMPATDRIVER))
+                        {
+                            match.Error = "SetupDiBuildDriverInfoList failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                            continue;
+                        }
+                        builtList = true;
+
+                        if (!SetupDiCallClassInstaller(DIF_SELECTBESTCOMPATDRV, deviceInfoSet, ref deviceInfoData))
+                        {
+                            int err = Marshal.GetLastWin32Error();
+                            if (err == ERROR_DI_BAD_PATH ||
+                                err == ERROR_NO_COMPAT_DRIVERS ||
+                                err == ERROR_NO_COMPATIBLE_DRIVERS)
+                            {
+                                match.Error = "No compatible function driver found in the folder (SetupAPI " +
+                                    FormatWin32Error(err) + ").";
+                            }
+                            else
+                            {
+                                match.Error = "DIF_SELECTBESTCOMPATDRV failed: " + FormatWin32Error(err);
+                            }
+                            continue;
+                        }
+
+                        SP_DRVINFO_DATA driverInfoData = new SP_DRVINFO_DATA();
+                        driverInfoData.cbSize = Marshal.SizeOf(typeof(SP_DRVINFO_DATA));
+
+                        if (!SetupDiGetSelectedDriver(deviceInfoSet, ref deviceInfoData, ref driverInfoData))
+                        {
+                            match.Error = "SetupDiGetSelectedDriver failed: " + FormatWin32Error(Marshal.GetLastWin32Error());
+                            continue;
+                        }
+
+                        match.Description = driverInfoData.Description;
+                        match.Provider = driverInfoData.ProviderName;
+                        match.Manufacturer = driverInfoData.MfgName;
+
+                        SP_DRVINSTALL_PARAMS driverInstallParams = new SP_DRVINSTALL_PARAMS();
+                        driverInstallParams.cbSize = Marshal.SizeOf(typeof(SP_DRVINSTALL_PARAMS));
+                        if (SetupDiGetDriverInstallParams(
+                            deviceInfoSet,
+                            ref deviceInfoData,
+                            ref driverInfoData,
+                            ref driverInstallParams))
+                        {
+                            match.Rank = driverInstallParams.Rank;
+                        }
+
+                        int structSize = Marshal.SizeOf(typeof(SP_DRVINFO_DETAIL_DATA));
+                        int requiredSize = 0;
+
+                        // Pass 1: ask Windows for the full buffer size (includes Hardware ID list).
+                        SetupDiGetDriverInfoDetail(
+                            deviceInfoSet,
+                            ref deviceInfoData,
+                            ref driverInfoData,
+                            IntPtr.Zero,
+                            0,
+                            out requiredSize);
+
+                        int sizeErr = Marshal.GetLastWin32Error();
+                        if (requiredSize < structSize)
+                        {
+                            // Some hosts return 1784 instead of 122 on the probe call; fall back.
+                            requiredSize = structSize + 4096;
+                        }
+                        else if (sizeErr != ERROR_INSUFFICIENT_BUFFER && sizeErr != 0 && requiredSize == 0)
+                        {
+                            match.Error = "SetupDiGetDriverInfoDetail size probe failed: " + FormatWin32Error(sizeErr);
+                            continue;
+                        }
+
+                        IntPtr detailPtr = Marshal.AllocHGlobal(requiredSize);
+                        try
+                        {
+                            for (int b = 0; b < requiredSize; b++)
+                            {
+                                Marshal.WriteByte(detailPtr, b, 0);
+                            }
+
+                            // cbSize must be sizeof(SP_DRVINFO_DETAIL_DATA), NOT the allocated buffer size.
+                            Marshal.WriteInt32(detailPtr, 0, structSize);
+
+                            int requiredSize2 = 0;
+                            if (!SetupDiGetDriverInfoDetail(
+                                deviceInfoSet,
+                                ref deviceInfoData,
+                                ref driverInfoData,
+                                detailPtr,
+                                requiredSize,
+                                out requiredSize2))
+                            {
+                                match.Error = "SetupDiGetDriverInfoDetail failed: " +
+                                    FormatWin32Error(Marshal.GetLastWin32Error()) +
+                                    " (cbSize=" + structSize + ", buf=" + requiredSize + ")";
+                                continue;
+                            }
+
+                            match.InfPath = TryGetInfPath(detailPtr);
+
+                            if (string.IsNullOrWhiteSpace(match.InfPath))
+                            {
+                                match.Error = "Selected driver did not return an INF path.";
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.FreeHGlobal(detailPtr);
+                        }
+                    }
+                    finally
+                    {
+                        if (builtList)
+                        {
+                            SetupDiDestroyDriverInfoList(deviceInfoSet, ref deviceInfoData, SPDIT_COMPATDRIVER);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                SetupDiDestroyDeviceInfoList(deviceInfoSet);
+            }
+
+            return results.ToArray();
         }
     }
 }
+"@
 
-$MatchedInfs = $MatchedInfs | Sort-Object -Unique
+if (-not ('SetupApiDriverHelperV3.Native' -as [type])) {
+    Add-Type -TypeDefinition $setupApiCode -Language CSharp -ErrorAction Stop
+}
 
-if (-not $MatchedInfs) {
+Write-Host "Searching Device Manager for devices missing drivers (problem 28)..." -ForegroundColor Cyan
+
+$MissingDevices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object {
+    $_.Problem -eq 28
+})
+
+if ($MissingDevices.Count -eq 0) {
+    Write-Host "All present devices currently have drivers installed. Nothing to do!" -ForegroundColor Green
+    Exit 0
+}
+
+Write-Host "Found $($MissingDevices.Count) device(s) missing drivers." -ForegroundColor Cyan
+foreach ($device in $MissingDevices) {
+    Write-Host ("  - {0}  [{1}]" -f $device.FriendlyName, $device.InstanceId) -ForegroundColor DarkCyan
+}
+
+Write-Host "Asking SetupAPI to select the best INF from '$Folder' for each device..." -ForegroundColor Cyan
+
+$instanceIds = @($MissingDevices | ForEach-Object { $_.InstanceId })
+$selections = [SetupApiDriverHelperV3.Native]::SelectBestDrivers($instanceIds, $Folder)
+
+$toInstall = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+$selectedCount = 0
+
+foreach ($selection in $selections) {
+    if ($selection.Error) {
+        Write-Warning ("No driver selected for {0}: {1}" -f $selection.InstanceId, $selection.Error)
+        continue
+    }
+
+    $selectedCount++
+    Write-Host ("Best match for {0}:" -f $selection.InstanceId) -ForegroundColor Magenta
+    Write-Host ("  Description : {0}" -f $selection.Description)
+    Write-Host ("  Provider    : {0}" -f $selection.Provider)
+    Write-Host ("  Manufacturer: {0}" -f $selection.Manufacturer)
+    Write-Host ("  Rank        : 0x{0:X8}" -f $selection.Rank)
+    Write-Host ("  INF         : {0}" -f $selection.InfPath)
+
+    if (-not (Test-Path -LiteralPath $selection.InfPath -PathType Leaf)) {
+        Write-Warning ("Selected INF does not exist: {0}" -f $selection.InfPath)
+        continue
+    }
+
+    [void]$toInstall.Add($selection.InfPath)
+}
+
+if ($toInstall.Count -eq 0) {
     Write-Warning "No matching drivers were found in the provided folder."
     Exit 0
 }
 
-Write-Host "Checking driver store for packages already present..." -ForegroundColor Cyan
-$DriverStoreInfNames = Get-DriverStoreOriginalInfNames
-
-$ToInstall = @()
-foreach ($InfPath in $MatchedInfs) {
-    $infName = [System.IO.Path]::GetFileName($InfPath)
-    if ($DriverStoreInfNames.Contains($infName)) {
-        Write-Host "Skipping (already in driver store): $InfPath" -ForegroundColor DarkGray
-        continue
-    }
-    $ToInstall += $InfPath
-}
-
-if (-not $ToInstall) {
-    Write-Host "All matching drivers are already in the driver store. Nothing to install." -ForegroundColor Green
-    Exit 0
-}
-
-Write-Host "Found $( $ToInstall.Count ) matching driver INF(s) to install (skipped $( $MatchedInfs.Count - $ToInstall.Count ) already present)..." -ForegroundColor Magenta
+Write-Host ("Installing {0} unique driver package(s) for {1} device(s)..." -f $toInstall.Count, $selectedCount) -ForegroundColor Magenta
 Write-Host "------------------------------------------------------" -ForegroundColor Gray
 
-# 5. Install only the matched drivers using pnputil
-foreach ($InfPath in $ToInstall) {
-    Write-Host ">>> Installing: $InfPath" -ForegroundColor Yellow
-    
-    # Run pnputil to add and install the specific driver
-    $pnputilArgs = @("/add-driver", "`"$InfPath`"", "/install")
-    & pnputil.exe @pnputilArgs | Out-Host
-    
+foreach ($infPath in ($toInstall | Sort-Object)) {
+    Write-Host ">>> Installing: $infPath" -ForegroundColor Yellow
+    & pnputil.exe /add-driver $infPath /install | Out-Host
     Write-Host "------------------------------------------------------" -ForegroundColor Gray
+}
+
+Write-Host "Rescanning devices..." -ForegroundColor Cyan
+& pnputil.exe /scan-devices | Out-Host
+
+Write-Host "Verifying remaining missing drivers..." -ForegroundColor Cyan
+$stillMissing = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
+    $_.Problem -eq 28
+})
+
+if ($stillMissing.Count -eq 0) {
+    Write-Host "All previously missing devices now have drivers installed." -ForegroundColor Green
+}
+else {
+    Write-Host ("{0} device(s) still report missing drivers:" -f $stillMissing.Count) -ForegroundColor Yellow
+    foreach ($device in $stillMissing) {
+        Write-Host ("  - {0}  [{1}]" -f $device.FriendlyName, $device.InstanceId) -ForegroundColor Yellow
+    }
 }
 
 Write-Host "Driver installation phase complete!" -ForegroundColor Green
