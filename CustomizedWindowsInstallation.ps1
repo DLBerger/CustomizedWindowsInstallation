@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "94193d4"
+$GitHash = "9290bf9"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -269,7 +269,7 @@ $names = [ordered]@{
     Unknown                  = 'unknown'
 }
 
-$kbDirs = @('SSU', 'OSCU', 'NET', 'MISC')
+$kbDirs = @('OS', 'NET', 'MISC')
 foreach ($u in $kbDirs) {
     $names[$u] = $u
 }
@@ -1961,19 +1961,14 @@ function Invoke-KBWork {
     # Build queries
     $queries = @(
         [PSCustomObject]@{
-            Query        = "Critical Updates Windows $WinOS $Version $Arch"
+            Query        = "Updates Windows $WinOS $Version $Arch"
             MaxResults   = 0
-            KBIndex      = 'SSU'
-        }
-        [PSCustomObject]@{
-            Query        = "Security Updates Windows $WinOS $Version $Arch"
-            MaxResults   = 0
-            KBIndex      = 'OSCU'
+            KBIndex      = 'OS'
         }
         [PSCustomObject]@{
             Query        = ".NET Security Updates Windows $WinOS $Version $Arch"
             MaxResults   = 0
-            KBIndex      = 'OSCU'
+            KBIndex      = 'OS'
         }
         [PSCustomObject]@{
             Query        = ".NET 8.0 $Arch Client"
@@ -2234,15 +2229,14 @@ function Invoke-ServiceWork {
 
     if ($DryRun) {
         Write-Host "[DryRun] Would service extracted indices in $($paths.WimsIndices)"
-        Write-Host "[DryRun] Would apply SSU packages from : $($paths.KBsSSU)"
-        Write-Host "[DryRun] Would apply LCU packages from : $($paths.KBsOSCU)"
+        Write-Host "[DryRun] Would apply OS packages from : $($paths.KBsOS)"
         Write-Host "[DryRun] Would service winre.wim inside each index's install.wim"
         return
     }
 
     Write-Host    "Starting Service workflow..."
     Write-Verbose "Invoke-ServiceWork: WimsIndices='$($paths.WimsIndices)' WimsFinal='$($paths.WimsFinal)'"
-    Write-Debug   "Invoke-ServiceWork: KBsSSU='$($paths.KBsSSU)' KBsOSCU='$($paths.KBsOSCU)' WimsMounts='$($paths.WimsMounts)'"
+    Write-Debug   "Invoke-ServiceWork: KBsOS='$($paths.KBsOS)' WimsMounts='$($paths.WimsMounts)'"
 
     Ensure-Folder $paths.WimsLogs
     Ensure-Folder $paths.WimsMounts
@@ -2261,7 +2255,8 @@ function Invoke-ServiceWork {
     # Internal package collection helper function
     function Get-ManifestPackages {
         param(
-            [string]$ManifestDir
+            [string]$ManifestDir,
+            [string]$Pattern
         )
         $manifestPath = Join-Path $ManifestDir $names.ManifestJson
         $files = @()
@@ -2272,7 +2267,7 @@ function Invoke-ServiceWork {
                 if (-not (Test-Path $fullPath)) {
                     throw "Re-run -KB as file in manifest $(FolderRelName $manifestPath) missing: $(FolderRelName $fullPath)"
                 }
-                if (($item.FileName -like '*.msu') -or ($item.FileName -like '*.cab')) {
+                if (($item.FileName -like $Pattern)) {
                     $file = Get-Item -Path $fullPath
                     $file | Add-Member -NotePropertyName 'Date' -NotePropertyValue $item.Date -Force
                     $file | Add-Member -NotePropertyName 'Title' -NotePropertyValue $item.Title -Force
@@ -2284,8 +2279,8 @@ function Invoke-ServiceWork {
     }
 
     # Gather available packages using manifest files
-    $ssuFiles = Get-ManifestPackages -ManifestDir $paths.KBsSSU
-    $lcuFiles = Get-ManifestPackages -ManifestDir $paths.KBsOSCU
+    $ssuFiles = Get-ManifestPackages -ManifestDir $paths.KBsOS -Pattern "*.cab"
+    $lcuFiles = Get-ManifestPackages -ManifestDir $paths.KBsOS -Pattern "*.msu"
 
     Write-Host  "Packages available - SSU: ($($ssuFiles.Count) files), LCU: ($($lcuFiles.Count) files)"
     Write-Verbose "SSU : $($ssuFiles.Name -join ', ')"
