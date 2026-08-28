@@ -167,7 +167,7 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "9290bf9"
+$GitHash = "0717d08"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
@@ -210,11 +210,11 @@ $MaxIORetries = 3
 $BufferSize = 64MB
 
 # Calculate the current percentage progress bucket
-$ProgressPrecentage = 10 # Report progress in 10% increments
+$ProgressPercentage = 10 # Report progress in 10% increments
 $PercentWidth       = 3  # Always 0–100
 $Bucket = { param([int64]$CopiedBytes, [int64]$TotalBytes)
             $(if   ($CopiedBytes -eq 0) { -1 }
-              else                      { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / $ProgressPrecentage) * $ProgressPrecentage })
+              else                      { [math]::Floor(([math]::Floor(($CopiedBytes / $TotalBytes) * 100)) / $ProgressPercentage) * $ProgressPercentage })
           }
 
 # Hex converter to string.  Write-xxxx ($(& $Hex $rc))
@@ -1762,7 +1762,7 @@ function Invoke-KBWork {
     
                             if ($pct -ge $nextMark) {
                                 Write-Host ($fmt -f $pct, $totalRead, $total)
-                                $nextMark += $ProgressPrecentage
+                                $nextMark += $ProgressPercentage
                             }
                         }
                     }
