@@ -167,13 +167,13 @@ param( # No positional parameters as they are broken in PowerShell 5.x
 )
 
 # git hash
-$GitHash = "0717d08"
+$GitHash = "ac98ae4"
 
 # Windows 10 or 11, determined by the build number of the source ISO
 $WinOS = '11'
 
 # Windows feature update version (for example: '22H2', '25H2')
-$Version = '25H2'
+$Version = '26H2'
 
 # CPU architecture: 'x64' or 'arm64'
 $Arch = 'x64'
@@ -1010,6 +1010,7 @@ function Get-WimMetadata {
     $detectedWinOS = if ($buildNumber -ge 22000) { '11' } else { '10' }
 
     $detectedVersion = switch ($buildNumber) {
+        { $_ -ge 26300 } { '26H2'; break }
         { $_ -ge 26200 } { '25H2'; break }
         { $_ -ge 26100 } { '24H2'; break }
         { $_ -ge 22631 } { '23H2'; break }
@@ -1020,7 +1021,7 @@ function Get-WimMetadata {
         { $_ -ge 19043 } { '21H1'; break }
         { $_ -ge 19042 } { '20H2'; break }
         { $_ -ge 19041 } { '2004'; break }
-        default          { if ($detectedWinOS -eq '11') { '25H2' } else { '22H2' }; break }
+        default          { if ($detectedWinOS -eq '11') { '26H2' } else { '22H2' }; break }
     }
 
     $detectedArch = switch -Wildcard ($archStr.ToLower()) {
