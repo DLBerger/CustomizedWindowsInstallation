@@ -34,7 +34,7 @@ if errorlevel 2 set "DRIVER_ARGS=/InstallDrivers "%SRC%%DRV%""
 ::  Consolidate Common Setup.exe Arguments
 :: ----------------------------------------------------------------------------
 :: These arguments are identical for both Upgrade and Clean Install scenarios.
-set "ARGS=/Eula Accept /DynamicUpdate Disable /Telemetry Disable"
+set "ARGS=/Product Server /Eula Accept /DynamicUpdate Disable /Telemetry Disable"
 
 if defined DRIVER_ARGS (
     echo.
